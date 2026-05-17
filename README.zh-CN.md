@@ -30,8 +30,8 @@ curl -fsSL https://raw.githubusercontent.com/ChengAoShen/MinionsCode/main/instal
 就这一行。脚本会自动检测平台，从 GitHub Releases 下对应的预编译二进制，
 装到 `~/.local/bin/minionscode`。**不需要 Rust 工具链**。
 
-**支持的平台**：Linux x86_64、macOS（Intel 和 Apple Silicon）。
-**Windows**：在 WSL 里跑。
+**支持的平台**：Linux x86_64、macOS Apple Silicon（M1 及以上）。
+**Intel Mac / Windows**：[从源码编译](#从源码构建)（Windows 需要在 WSL 里编）。
 
 如果 `~/.local/bin` 不在你的 `$PATH` 里，安装脚本会告诉你怎么加。
 

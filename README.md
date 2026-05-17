@@ -30,8 +30,8 @@ curl -fsSL https://raw.githubusercontent.com/ChengAoShen/MinionsCode/main/instal
 That's it. The script downloads the prebuilt binary for your platform and
 installs it to `~/.local/bin/minionscode`. No Rust toolchain required.
 
-**Supported:** Linux x86_64, macOS (Intel + Apple Silicon).
-**Windows:** run it inside WSL.
+**Supported:** Linux x86_64, macOS Apple Silicon (M1 and newer).
+**Intel Mac / Windows:** [build from source](#build-from-source) (Windows needs WSL).
 
 Tip: if `~/.local/bin` isn't on your `$PATH`, the installer tells you what
 to add to your shell rc.

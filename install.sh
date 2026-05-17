@@ -29,9 +29,12 @@ case "$(uname -m)" in
   *) err "unsupported arch: $(uname -m)" ;;
 esac
 
-# Linux prebuilts are currently only x86_64.
+# Linux prebuilts are x86_64 only; macOS prebuilts are aarch64 only.
 if [ "$os" = "linux" ] && [ "$arch" != "x86_64" ]; then
   err "no prebuilt for linux-${arch}. Build from source: https://github.com/${REPO}#build-from-source"
+fi
+if [ "$os" = "macos" ] && [ "$arch" != "aarch64" ]; then
+  err "no prebuilt for macos-${arch} (Intel Macs not supported — build from source instead): https://github.com/${REPO}#build-from-source"
 fi
 
 # Resolve version (latest tag) when not pinned.
