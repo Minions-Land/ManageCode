@@ -47,7 +47,6 @@ struct ContentView: View {
 
     var body: some View {
         rootContent
-            .toolbar { titleBarToolbar }
             .background(rootBackground)
             .preferredColorScheme(.dark)
             .environment(\.uiScale, settings.fontSize / 13.0)
@@ -115,6 +114,11 @@ struct ContentView: View {
                 }
             }
         }
+        // Push the tabBar into the title-bar row so the traffic lights and our
+        // controls share a single 38pt strip. fullSizeContentView lets us draw
+        // there; ignoresSafeArea(.container, edges: .top) is what actually
+        // moves SwiftUI content up past the safe area inset.
+        .ignoresSafeArea(.container, edges: .top)
     }
 
     @ViewBuilder
@@ -173,104 +177,29 @@ struct ContentView: View {
 
     private func applyWindowTranslucency() {
         guard let window = NSApp.windows.first else { return }
+        // Always extend content under the title bar — the tabBar at the top of
+        // our VStack is meant to occupy the SAME row as the traffic lights, with
+        // the traffic lights floating on top. Without this, SwiftUI's safe area
+        // pushes our content below the title bar and you get two rows.
+        window.titlebarAppearsTransparent = true
+        window.styleMask.insert(.fullSizeContentView)
         if settings.translucentBackground {
             window.isOpaque = false
             window.backgroundColor = .clear
-            window.titlebarAppearsTransparent = true
-            // Extend SwiftUI content all the way under the traffic lights so the
-            // statusStrip occupies the same row — no empty title-bar strip above it.
-            window.styleMask.insert(.fullSizeContentView)
         } else {
             window.isOpaque = true
             window.backgroundColor = NSColor(red: 0.04, green: 0.04, blue: 0.05, alpha: 1)
         }
     }
 
-    // MARK: - Native title-bar toolbar
-    //
-    // Lives in the actual NSWindow titlebar via `.toolbar` + `unifiedCompact`,
-    // so AppKit handles fullscreen auto-hide for us. Layout:
-    //   [traffic lights]  [MinionDot]  [Editing] [CD] [RunClaude]  ········  [active] [tracked] [spent]  [⋯] [⚙]
+    // MARK: - Helpers
 
-    @ToolbarContentBuilder
-    private var titleBarToolbar: some ToolbarContent {
-        // Identity — fourth circle right after close/min/max, sized to match.
-        ToolbarItem(placement: .navigation) {
-            MinionDot(size: 12)
-        }
-
-        // Per-tab tools as separate ToolbarItems so AppKit lays them out evenly.
-        if let terminal = activeTerminalId.flatMap({ terminals[$0] }) {
-            let isWatch = terminal.mode.isWatch
-            if isWatch {
-                ToolbarItem(placement: .navigation) {
-                    HStack(spacing: 4) {
-                        Image(systemName: "eye.fill").font(.system(size: 10))
-                        Text("read-only").font(.system(size: 10, weight: .semibold))
-                    }
-                    .foregroundColor(Color.green.opacity(0.85))
-                }
-            } else {
-                ToolbarItem(placement: .navigation) {
-                    ReadOnlyToggle(terminal: terminal)
-                }
-                ToolbarItem(placement: .navigation) {
-                    CdFolderButton(terminal: terminal)
-                }
-                if case .shell = terminal.mode {
-                    ToolbarItem(placement: .navigation) {
-                        ClaudeLaunchMenu(terminal: terminal)
-                    }
-                }
-            }
-        }
-
-        // Right side — plain text stats, no capsule wrapping. The "active /
-        // tracked / spent" trio is informational; the menu and gear are bare
-        // SF symbol buttons that match AppKit's native toolbar style.
-        ToolbarItem(placement: .primaryAction) {
-            HStack(spacing: 14) {
-                plainStat(label: "active", value: "\(manager.activeSessions)", tint: GOLD)
-                plainStat(label: "tracked", value: "\(manager.sessions.count)", tint: TEXT_DIM)
-                plainStat(label: "spent", value: fmtCost(manager.totalCost), tint: Color.orange)
-            }
-        }
-
-        ToolbarItem(placement: .primaryAction) {
-            Menu {
-                Button("Delete junk sessions (tmp / empty)") {
-                    let n = manager.deleteJunkSessions()
-                    if n > 0 { manager.scan() }
-                }
-                Button("Delete empty tabs") { deleteEmptySessions() }
-                Divider()
-                Button("Auto-name unnamed Opus sessions") {
-                    Task {
-                        await manager.autoNameUnnamedSessions { s in
-                            (s.model?.lowercased().contains("opus")) ?? false
-                        }
-                    }
-                }
-                Button("Auto-name all unnamed sessions") {
-                    Task { await manager.autoNameUnnamedSessions() }
-                }
-                Divider()
-                Button("Refresh now") { manager.scan() }
-            } label: {
-                Image(systemName: "ellipsis.circle")
-            }
-            .menuIndicator(.hidden)
-        }
-
-        ToolbarItem(placement: .primaryAction) {
-            Button { showingSettings = true } label: {
-                Image(systemName: "gearshape")
-            }
-        }
+    private var activeTerminal: TerminalSession? {
+        activeTerminalId.flatMap { terminals[$0] }
     }
 
-    /// Plain inline stat (label + value, no capsule background) for the toolbar
-    /// right side. Matches AppKit's native compact-toolbar feel.
+    /// Plain inline stat (label + value, no capsule background) for the
+    /// right-side cluster. Matches AppKit's native compact-toolbar feel.
     private func plainStat(label: String, value: String, tint: Color) -> some View {
         HStack(spacing: 4) {
             Text(label.uppercased())
@@ -565,7 +494,33 @@ struct ContentView: View {
     }
 
     private var tabBar: some View {
-        HStack(spacing: 0) {
+        HStack(spacing: 10) {
+            // Identity dot — sized + positioned to be the fourth equidistant
+            // circle next to the traffic lights (close/min/max are 12pt at
+            // x=20/40/60, so the 4th center sits at x=80 → leading pad 74 with
+            // a 12pt dot lands its center exactly there).
+            MinionDot(size: 12)
+
+            // LEFT cluster — per-tab tools. Edit toggle (or read-only badge in
+            // watch mode) and CD button. These are the only capsule-styled
+            // buttons in this row, by user request.
+            if let terminal = activeTerminal {
+                if terminal.mode.isWatch {
+                    HStack(spacing: 3) {
+                        Image(systemName: "eye.fill").font(.system(size: 10))
+                        Text("read-only").font(.system(size: 10, weight: .semibold))
+                    }
+                    .padding(.horizontal, 7).padding(.vertical, 3)
+                    .background(Capsule().fill(Color.green.opacity(0.15)))
+                    .foregroundColor(Color.green.opacity(0.85))
+                } else {
+                    ReadOnlyToggle(terminal: terminal)
+                }
+                CdFolderButton(terminal: terminal)
+            }
+
+            // MIDDLE — tab chips. Takes all remaining horizontal space, and
+            // scrolls when there are too many tabs to fit.
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 4) {
                     ForEach(orderedTerminalIds, id: \.self) { tid in
@@ -584,43 +539,82 @@ struct ContentView: View {
                             )
                         }
                     }
+                    // New-tab "+" sits at the end of the tab strip — feels
+                    // like a Safari/Chrome-style new-tab affordance and uses
+                    // bare SF symbol styling to stay quiet.
+                    Button(action: newShellSession) {
+                        Image(systemName: "plus")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundColor(TEXT_DIM)
+                            .frame(width: 22, height: 22)
+                    }
+                    .buttonStyle(.plain)
+                    .help("New shell tab (⌘T)")
+                    .keyboardShortcut("t")
                 }
-                .padding(.horizontal, 8)
                 .padding(.vertical, 6)
             }
-            HStack(spacing: 4) {
-                Button(action: newShellSession) {
-                    Image(systemName: "plus")
-                        .font(.system(size: 12, weight: .semibold))
-                        .frame(width: 26, height: 26)
-                        .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(Color.white.opacity(0.04)))
-                        .foregroundColor(TEXT_DIM)
-                }
-                .buttonStyle(.plain)
-                .help("New shell tab (⌘T)")
-                .keyboardShortcut("t")
+            .frame(maxWidth: .infinity)
 
-                Button {
-                    NotificationCenter.default.post(name: .toggleSidebar, object: nil)
-                } label: {
-                    // Use the same symbol for both states — `.fill` variant doesn't
-                    // exist on every macOS version and was rendering blank.
-                    // The active state is conveyed by tint and background.
-                    Image(systemName: "sidebar.right")
-                        .font(.system(size: 12, weight: .semibold))
-                        .frame(width: 26, height: 26)
-                        .background(
-                            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                .fill(sidebarCollapsed ? Color.white.opacity(0.04) : GOLD.opacity(0.18))
-                        )
-                        .foregroundColor(sidebarCollapsed ? TEXT_DIM : GOLD)
-                }
-                .buttonStyle(.plain)
-                .help(sidebarCollapsed ? "Show Claude sessions panel (⌘\\)" : "Hide panel (⌘\\)")
-                .keyboardShortcut("\\")
+            // RIGHT cluster — Run Claude, stats trio, ⋯, ⚙.
+            if let terminal = activeTerminal, case .shell = terminal.mode {
+                ClaudeLaunchMenu(terminal: terminal)
             }
-            .padding(.trailing, 8)
+            HStack(spacing: 12) {
+                plainStat(label: "active", value: "\(manager.activeSessions)", tint: GOLD)
+                plainStat(label: "tracked", value: "\(manager.sessions.count)", tint: TEXT_DIM)
+                plainStat(label: "spent", value: fmtCost(manager.totalCost), tint: Color.orange)
+            }
+            Menu {
+                Button("Delete junk sessions (tmp / empty)") {
+                    let n = manager.deleteJunkSessions()
+                    if n > 0 { manager.scan() }
+                }
+                Button("Delete empty tabs") { deleteEmptySessions() }
+                Divider()
+                Button("Auto-name unnamed Opus sessions") {
+                    Task {
+                        await manager.autoNameUnnamedSessions { s in
+                            (s.model?.lowercased().contains("opus")) ?? false
+                        }
+                    }
+                }
+                Button("Auto-name all unnamed sessions") {
+                    Task { await manager.autoNameUnnamedSessions() }
+                }
+                Divider()
+                Button("Refresh now") { manager.scan() }
+            } label: {
+                Image(systemName: "ellipsis.circle")
+                    .font(.system(size: 13))
+                    .foregroundColor(TEXT_DIM)
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+
+            Button { showingSettings = true } label: {
+                Image(systemName: "gearshape")
+                    .font(.system(size: 13))
+                    .foregroundColor(TEXT_DIM)
+            }
+            .buttonStyle(.plain)
+
+            // Sidebar toggle stays as the rightmost affordance — bare SF symbol
+            // to match the ⋯/⚙ pair to its left.
+            Button {
+                NotificationCenter.default.post(name: .toggleSidebar, object: nil)
+            } label: {
+                Image(systemName: "sidebar.right")
+                    .font(.system(size: 13))
+                    .foregroundColor(sidebarCollapsed ? TEXT_DIM : GOLD)
+            }
+            .buttonStyle(.plain)
+            .help(sidebarCollapsed ? "Show Claude sessions panel (⌘\\)" : "Hide panel (⌘\\)")
+            .keyboardShortcut("\\")
         }
+        .padding(.leading, isFullscreen ? 14 : 74)
+        .padding(.trailing, 14)
         .frame(height: 38)
         .background(BG_DARKEST.opacity(settings.translucentBackground ? CHROME_MID_ALPHA : 1))
     }
