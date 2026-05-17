@@ -15,7 +15,12 @@ private let TEXT_FAINT = Color.white.opacity(0.25)
 /// other strip. Same color base, just two alphas — keeps the glass look
 /// consistent without losing visual hierarchy.
 private let CHROME_TOP_ALPHA: Double = 0.55
-private let CHROME_MID_ALPHA: Double = 0.45
+private let CHROME_MID_ALPHA: Double = 0.32
+
+/// Terminal cells render almost transparent so the surface is the lightest
+/// of the three tiers — the visual hierarchy is title bar (deepest) →
+/// chrome → terminal (lightest).
+private let TERMINAL_ALPHA: Double = 0.18
 
 struct ContentView: View {
     @State private var manager = SessionManager.shared
@@ -34,6 +39,7 @@ struct ContentView: View {
     @State private var showingCloseConfirm = false
     @State private var pendingCloseId: String?
     @State private var modelFilter: ModelFamilyFilter = .all
+    @State private var isFullscreen: Bool = false
 
     private var sidebarTargetWidth: CGFloat {
         sidebarCollapsed ? 0 : sidebarWidth
@@ -91,7 +97,13 @@ struct ContentView: View {
 
     private var rootContent: some View {
         VStack(spacing: 0) {
-            tabBar
+            // Auto-hide the tab strip in fullscreen — the OS title bar is already
+            // hidden, so this row should be too. Mouse hover at the very top brings
+            // the title bar back via AppKit; we leave the tab strip out for clean
+            // immersion.
+            if !isFullscreen {
+                tabBar
+            }
             HStack(spacing: 0) {
                 terminalPanel
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -110,7 +122,9 @@ struct ContentView: View {
         if settings.translucentBackground {
             ZStack {
                 VisualEffectBackground(material: .hudWindow, blendingMode: .behindWindow)
-                BG_DARKEST.opacity(0.20)
+                // Match terminal alpha so the area behind sidebar resizer / margins
+                // is the same lightness as the terminal — no bright seam.
+                BG_DARKEST.opacity(TERMINAL_ALPHA)
             }
         } else {
             BG_DARKEST
@@ -121,7 +135,23 @@ struct ContentView: View {
         manager.startPolling()
         NSApp.activate(ignoringOtherApps: true)
         applyWindowTranslucency()
+        observeFullscreen()
         if terminals.isEmpty { newShellSession() }
+    }
+
+    /// Observes NSWindow enter/leave fullscreen so the in-content tabBar can hide
+    /// when fullscreen — the OS title bar already auto-hides on its own, so we just
+    /// match it for the second row.
+    private func observeFullscreen() {
+        guard let window = NSApp.windows.first else { return }
+        isFullscreen = window.styleMask.contains(.fullScreen)
+        let nc = NotificationCenter.default
+        nc.addObserver(forName: NSWindow.didEnterFullScreenNotification, object: window, queue: .main) { _ in
+            Task { @MainActor in self.isFullscreen = true }
+        }
+        nc.addObserver(forName: NSWindow.didExitFullScreenNotification, object: window, queue: .main) { _ in
+            Task { @MainActor in self.isFullscreen = false }
+        }
     }
 
     private func reapplyTheme() {
@@ -160,24 +190,49 @@ struct ContentView: View {
     //
     // Lives in the actual NSWindow titlebar via `.toolbar` + `unifiedCompact`,
     // so AppKit handles fullscreen auto-hide for us. Layout:
-    //   [traffic lights] [MinionDot] [name·mode·tools] ········ [stats][menu][gear]
+    //   [traffic lights]  [MinionDot]  [Editing] [CD] [RunClaude]  ········  [active] [tracked] [spent]  [⋯] [⚙]
 
     @ToolbarContentBuilder
     private var titleBarToolbar: some ToolbarContent {
-        // Identity — sits as the fourth circle right after the three traffic lights.
+        // Identity — fourth circle right after close/min/max, sized to match.
         ToolbarItem(placement: .navigation) {
             MinionDot(size: 12)
         }
 
-        ToolbarItem(placement: .navigation) {
-            activeTerminalToolbarItems
+        // Per-tab tools as separate ToolbarItems so AppKit lays them out evenly.
+        if let terminal = activeTerminalId.flatMap({ terminals[$0] }) {
+            let isWatch = terminal.mode.isWatch
+            if isWatch {
+                ToolbarItem(placement: .navigation) {
+                    HStack(spacing: 4) {
+                        Image(systemName: "eye.fill").font(.system(size: 10))
+                        Text("read-only").font(.system(size: 10, weight: .semibold))
+                    }
+                    .foregroundColor(Color.green.opacity(0.85))
+                }
+            } else {
+                ToolbarItem(placement: .navigation) {
+                    ReadOnlyToggle(terminal: terminal)
+                }
+                ToolbarItem(placement: .navigation) {
+                    CdFolderButton(terminal: terminal)
+                }
+                if case .shell = terminal.mode {
+                    ToolbarItem(placement: .navigation) {
+                        ClaudeLaunchMenu(terminal: terminal)
+                    }
+                }
+            }
         }
 
+        // Right side — plain text stats, no capsule wrapping. The "active /
+        // tracked / spent" trio is informational; the menu and gear are bare
+        // SF symbol buttons that match AppKit's native toolbar style.
         ToolbarItem(placement: .primaryAction) {
-            HStack(spacing: 10) {
-                statusBadge(label: "active", value: "\(manager.activeSessions)", tint: GOLD)
-                statusBadge(label: "tracked", value: "\(manager.sessions.count)", tint: TEXT_DIM)
-                statusBadge(label: "spent", value: fmtCost(manager.totalCost), tint: Color.orange)
+            HStack(spacing: 14) {
+                plainStat(label: "active", value: "\(manager.activeSessions)", tint: GOLD)
+                plainStat(label: "tracked", value: "\(manager.sessions.count)", tint: TEXT_DIM)
+                plainStat(label: "spent", value: fmtCost(manager.totalCost), tint: Color.orange)
             }
         }
 
@@ -214,43 +269,17 @@ struct ContentView: View {
         }
     }
 
-    @ViewBuilder
-    private var activeTerminalToolbarItems: some View {
-        if let tid = activeTerminalId, let terminal = terminals[tid] {
-            let session = terminal.mode.sessionId.flatMap { sid in
-                manager.sessions.first { $0.sessionId == sid }
-            }
-            let isWatch = terminal.mode.isWatch
-            HStack(spacing: 8) {
-                Text(session?.name ?? terminal.mode.label)
-                    .font(.system(size: 12, weight: .semibold, design: .monospaced))
-                    .foregroundColor(TEXT_PRIMARY)
-                    .lineLimit(1)
-                Text(terminal.mode.label)
-                    .font(.system(size: 9, weight: .bold))
-                    .padding(.horizontal, 6).padding(.vertical, 2)
-                    .background(Capsule().fill((isWatch ? Color.green : GOLD).opacity(0.15)))
-                    .foregroundColor(isWatch ? Color.green : GOLD)
-                if isWatch {
-                    HStack(spacing: 4) {
-                        Image(systemName: "eye.fill").font(.system(size: 9))
-                        Text("read-only").font(.system(size: 10, weight: .semibold))
-                    }
-                    .foregroundColor(Color.green.opacity(0.85))
-                    .padding(.horizontal, 7).padding(.vertical, 3)
-                    .background(Capsule().fill(Color.green.opacity(0.12)))
-                } else {
-                    ReadOnlyToggle(terminal: terminal)
-                    CdFolderButton(terminal: terminal)
-                }
-                if case .shell = terminal.mode {
-                    ClaudeLaunchMenu(terminal: terminal)
-                }
-                if let s = session {
-                    Pill(label: "In", value: fmtTokens(s.usage.totalInput), color: GOLD)
-                    Pill(label: "$", value: fmtCost(s.cost), color: Color.orange)
-                }
-            }
+    /// Plain inline stat (label + value, no capsule background) for the toolbar
+    /// right side. Matches AppKit's native compact-toolbar feel.
+    private func plainStat(label: String, value: String, tint: Color) -> some View {
+        HStack(spacing: 4) {
+            Text(label.uppercased())
+                .font(.system(size: 9, weight: .semibold))
+                .tracking(0.4)
+                .foregroundColor(.white.opacity(0.4))
+            Text(value)
+                .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                .foregroundColor(tint)
         }
     }
 
@@ -503,10 +532,9 @@ struct ContentView: View {
                     .padding(.horizontal, 10)
                     .padding(.bottom, 6)
                     .background(
-                        // Same chrome tint as everything else — no second color
-                        // for the padding margin. Terminal cells are transparent
-                        // in translucent mode (see TerminalSession.applyDefaultTheme).
-                        BG_DARKEST.opacity(settings.translucentBackground ? CHROME_MID_ALPHA : 1)
+                        // Lightest of the three tiers — chrome above, padding-margin
+                        // here matches the cell area so the terminal is one surface.
+                        BG_DARKEST.opacity(settings.translucentBackground ? TERMINAL_ALPHA : 1)
                     )
             } else {
                 emptyState
@@ -521,7 +549,7 @@ struct ContentView: View {
                 }
             )
         }
-        .background(BG_DARKEST.opacity(settings.translucentBackground ? CHROME_MID_ALPHA : 1))
+        .background(BG_DARKEST.opacity(settings.translucentBackground ? TERMINAL_ALPHA : 1))
     }
 
     private func statusBadge(label: String, value: String, tint: Color) -> some View {
@@ -1752,13 +1780,9 @@ struct SidebarResizer: View {
 
     var body: some View {
         Rectangle()
-            .fill(Color.white.opacity(0.001))
-            .frame(width: 6)
-            .overlay(
-                Rectangle()
-                    .fill(Color.white.opacity(0.04))
-                    .frame(width: 1)
-            )
+            .fill(Color.black.opacity(0.001))
+            .frame(width: 4)
+            .contentShape(Rectangle())
             .onHover { hovering in
                 if hovering {
                     NSCursor.resizeLeftRight.push()
