@@ -155,6 +155,8 @@ struct ContentView: View {
             Divider().background(Color.white.opacity(0.05))
             searchBar
             Divider().background(Color.white.opacity(0.05))
+            filterBar
+            Divider().background(Color.white.opacity(0.05))
             globalStats
             Divider().background(Color.white.opacity(0.05))
             sessionsList
@@ -162,6 +164,30 @@ struct ContentView: View {
             sidebarFooter
         }
         .background(BG_DARK)
+    }
+
+    private var filterBar: some View {
+        HStack(spacing: 6) {
+            FilterChip(label: "\(settings.historyHorizonDays)d", systemImage: "calendar", isOn: true) {
+                let next = (settings.historyHorizonDays == 7) ? 30 :
+                           (settings.historyHorizonDays == 30) ? 1 :
+                           (settings.historyHorizonDays == 1) ? 3 : 7
+                settings.historyHorizonDays = next
+                manager.scan()
+            }
+            FilterChip(label: "Empty", systemImage: "tray", isOn: !settings.hideEmptyFolders) {
+                settings.hideEmptyFolders.toggle()
+            }
+            FilterChip(label: "Inactive", systemImage: "moon.zzz", isOn: !settings.hideInactiveFolders) {
+                settings.hideInactiveFolders.toggle()
+            }
+            FilterChip(label: "Collapse", systemImage: "rectangle.compress.vertical", isOn: settings.collapseInactivesInFolder) {
+                settings.collapseInactivesInFolder.toggle()
+            }
+            Spacer()
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
     }
 
     private var searchBar: some View {
@@ -313,20 +339,55 @@ struct ContentView: View {
         ScrollView {
             LazyVStack(spacing: 4, pinnedViews: []) {
                 if settings.groupByDirectory {
-                    let groups = Dictionary(grouping: filteredSessions, by: { shortPath($0.cwd) })
-                        .sorted { $0.key < $1.key }
-                    ForEach(groups, id: \.key) { group, sessions in
-                        SessionGroup(title: group, sessions: sessions, viewModel: viewModel)
+                    let groups = computeGroups()
+                    ForEach(groups, id: \.title) { entry in
+                        SessionGroup(
+                            title: entry.title,
+                            sessions: entry.sessions,
+                            aliveCount: entry.aliveCount,
+                            viewModel: viewModel
+                        )
                     }
                 } else {
                     ForEach(filteredSessions) { session in
                         SessionCard(session: session, viewModel: viewModel)
                     }
                 }
+                if manager.isLoadingHistory {
+                    HStack(spacing: 8) {
+                        ProgressView().controlSize(.small)
+                        Text("Thinking…").font(.system(size: 11)).foregroundColor(TEXT_DIM)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 12)
+                }
             }
             .padding(.horizontal, 8)
             .padding(.vertical, 6)
         }
+    }
+
+    /// Folder grouping with filters and sort applied:
+    /// - Hide empty folders / hide all-inactive folders (per AppSettings)
+    /// - Sort by alive count desc, then by latest activity desc
+    /// - Within a folder: alive first, then by last activity
+    private func computeGroups() -> [(title: String, sessions: [SessionInfo], aliveCount: Int)] {
+        let grouped = Dictionary(grouping: filteredSessions, by: { shortPath($0.cwd) })
+        var entries: [(title: String, sessions: [SessionInfo], aliveCount: Int)] = []
+        for (title, sessions) in grouped {
+            let alive = sessions.filter(\.isAlive).count
+            let recentlyActive = sessions.filter(\.isRecentlyActive).count
+            if settings.hideEmptyFolders && sessions.isEmpty { continue }
+            if settings.hideInactiveFolders && recentlyActive == 0 { continue }
+            entries.append((title, sessions, alive))
+        }
+        entries.sort { a, b in
+            if a.aliveCount != b.aliveCount { return a.aliveCount > b.aliveCount }
+            let aLatest = a.sessions.compactMap(\.lastActivityAt).max() ?? .distantPast
+            let bLatest = b.sessions.compactMap(\.lastActivityAt).max() ?? .distantPast
+            return aLatest > bLatest
+        }
+        return entries
     }
 
     private var sidebarFooter: some View {
@@ -761,6 +822,7 @@ struct ClaudeLaunchMenu: View {
     @State private var effort: EffortLevel = .none
     @State private var permissionMode: PermissionMode = .none
     @State private var dangerouslySkipPermissions = false
+    @State private var sandbox = false
     @State private var resumeMode: ResumeMode = .none
     @State private var forkSession = false
     @State private var verbose = false
@@ -862,7 +924,9 @@ struct ClaudeLaunchMenu: View {
     }
 
     var composedCommand: String {
-        var parts = ["claude"]
+        var parts: [String] = []
+        if sandbox { parts.append("IS_SANDBOX=1") }
+        parts.append("claude")
         if let f = selectedModel.flag { parts.append(f) }
         if let f = effort.flag { parts.append(f) }
         if let f = permissionMode.flag { parts.append(f) }
@@ -939,6 +1003,10 @@ struct ClaudeLaunchMenu: View {
                     }
 
                     section("FLAGS") {
+                        Toggle(isOn: $sandbox) {
+                            Text("IS_SANDBOX=1 (env prefix)")
+                                .font(.system(size: 11, design: .monospaced))
+                        }
                         Toggle(isOn: $dangerouslySkipPermissions) {
                             Text("--dangerously-skip-permissions")
                                 .font(.system(size: 11, design: .monospaced))
@@ -1043,6 +1111,7 @@ struct ClaudeLaunchMenu: View {
         effort = .none
         permissionMode = .none
         dangerouslySkipPermissions = false
+        sandbox = false
         verbose = false
         resumeMode = .none
         forkSession = false
@@ -1195,9 +1264,34 @@ struct TokenRow: View {
 struct SessionGroup: View {
     let title: String
     let sessions: [SessionInfo]
+    let aliveCount: Int
     let viewModel: SessionViewModel
     @State private var expanded = true
     @State private var hovering = false
+    @State private var settings = AppSettings.shared
+    @State private var showInactives = false
+
+    private var sortedSessions: [SessionInfo] {
+        sessions.sorted {
+            if $0.isAlive != $1.isAlive { return $0.isAlive && !$1.isAlive }
+            if $0.isRecentlyActive != $1.isRecentlyActive { return $0.isRecentlyActive && !$1.isRecentlyActive }
+            let d0 = $0.lastActivityAt ?? .distantPast
+            let d1 = $1.lastActivityAt ?? .distantPast
+            return d0 > d1
+        }
+    }
+
+    private var visibleSessions: [SessionInfo] {
+        if settings.collapseInactivesInFolder && !showInactives {
+            return sortedSessions.filter(\.isRecentlyActive)
+        }
+        return sortedSessions
+    }
+
+    private var hiddenInactiveCount: Int {
+        guard settings.collapseInactivesInFolder, !showInactives else { return 0 }
+        return sortedSessions.count - visibleSessions.count
+    }
 
     var body: some View {
         VStack(spacing: 2) {
@@ -1210,6 +1304,13 @@ struct SessionGroup: View {
                     .tracking(0.5)
                     .lineLimit(1)
                 Spacer()
+                if aliveCount > 0 {
+                    Text("\(aliveCount) live")
+                        .font(.system(size: 9, weight: .bold, design: .monospaced))
+                        .foregroundColor(Color(red: 1.0, green: 0.78, blue: 0.10))
+                        .padding(.horizontal, 5).padding(.vertical, 1)
+                        .background(Capsule().fill(Color(red: 1.0, green: 0.78, blue: 0.10).opacity(0.15)))
+                }
                 Text("\(sessions.count)")
                     .font(.system(size: 9, weight: .semibold, design: .monospaced))
                     .foregroundColor(.white.opacity(0.4))
@@ -1229,8 +1330,23 @@ struct SessionGroup: View {
             }
 
             if expanded {
-                ForEach(sessions) { session in
+                ForEach(visibleSessions) { session in
                     SessionCard(session: session, viewModel: viewModel)
+                }
+                if hiddenInactiveCount > 0 {
+                    Button {
+                        withAnimation(.easeInOut(duration: 0.15)) { showInactives = true }
+                    } label: {
+                        HStack {
+                            Image(systemName: "chevron.down").font(.system(size: 9))
+                            Text("Show \(hiddenInactiveCount) inactive")
+                                .font(.system(size: 10, weight: .medium))
+                            Spacer()
+                        }
+                        .padding(.horizontal, 10).padding(.vertical, 5)
+                        .foregroundColor(.white.opacity(0.4))
+                    }
+                    .buttonStyle(.plain)
                 }
             }
         }
@@ -1446,6 +1562,28 @@ struct ScaledFontModifier: ViewModifier {
 
     func body(content: Content) -> some View {
         content.font(.system(size: size * scale, weight: weight, design: design))
+    }
+}
+
+struct FilterChip: View {
+    let label: String
+    let systemImage: String
+    let isOn: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 3) {
+                Image(systemName: systemImage).font(.system(size: 9))
+                Text(label).font(.system(size: 10, weight: .semibold))
+            }
+            .padding(.horizontal, 7).padding(.vertical, 3)
+            .background(
+                Capsule().fill(isOn ? Color(red: 1.0, green: 0.78, blue: 0.10).opacity(0.15) : Color.white.opacity(0.04))
+            )
+            .foregroundColor(isOn ? Color(red: 1.0, green: 0.78, blue: 0.10) : .white.opacity(0.5))
+        }
+        .buttonStyle(.plain)
     }
 }
 

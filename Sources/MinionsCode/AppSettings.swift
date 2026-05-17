@@ -14,6 +14,10 @@ final class AppSettings {
     private let soundKey = "minionscode.sound"
 
     private let translucentKey = "minionscode.translucent"
+    private let historyHorizonKey = "minionscode.historyHorizonDays"
+    private let hideEmptyFoldersKey = "minionscode.hideEmptyFolders"
+    private let hideInactiveFoldersKey = "minionscode.hideInactiveFolders"
+    private let collapseInactivesKey = "minionscode.collapseInactives"
 
     var fontSize: CGFloat {
         didSet { defaults.set(Double(fontSize), forKey: fontSizeKey) }
@@ -39,6 +43,25 @@ final class AppSettings {
         didSet { defaults.set(translucentBackground, forKey: translucentKey) }
     }
 
+    /// History horizon in days. 7 by default — only sessions modified within
+    /// this window appear in the sidebar.
+    var historyHorizonDays: Int {
+        didSet { defaults.set(historyHorizonDays, forKey: historyHorizonKey) }
+    }
+
+    /// Folder-level filters (sidebar)
+    var hideEmptyFolders: Bool {
+        didSet { defaults.set(hideEmptyFolders, forKey: hideEmptyFoldersKey) }
+    }
+
+    var hideInactiveFolders: Bool {
+        didSet { defaults.set(hideInactiveFolders, forKey: hideInactiveFoldersKey) }
+    }
+
+    var collapseInactivesInFolder: Bool {
+        didSet { defaults.set(collapseInactivesInFolder, forKey: collapseInactivesKey) }
+    }
+
     init() {
         self.fontSize = defaults.object(forKey: fontSizeKey) as? CGFloat ?? 13
         self.theme = Theme(rawValue: defaults.string(forKey: themeKey) ?? "minion") ?? .minion
@@ -46,6 +69,10 @@ final class AppSettings {
         self.notificationsEnabled = defaults.object(forKey: notificationsKey) as? Bool ?? true
         self.soundEnabled = defaults.object(forKey: soundKey) as? Bool ?? true
         self.translucentBackground = defaults.object(forKey: translucentKey) as? Bool ?? true
+        self.historyHorizonDays = defaults.object(forKey: historyHorizonKey) as? Int ?? 7
+        self.hideEmptyFolders = defaults.object(forKey: hideEmptyFoldersKey) as? Bool ?? true
+        self.hideInactiveFolders = defaults.object(forKey: hideInactiveFoldersKey) as? Bool ?? false
+        self.collapseInactivesInFolder = defaults.object(forKey: collapseInactivesKey) as? Bool ?? true
     }
 }
 

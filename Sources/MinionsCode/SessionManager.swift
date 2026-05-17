@@ -16,6 +16,9 @@ final class SessionManager {
 
     var sessions: [SessionInfo] = []
     var selectedSessionId: String?
+    /// True while the deep history scan is running. Sidebar shows a "thinking"
+    /// indicator so the user knows results will appear progressively.
+    var isLoadingHistory: Bool = false
     private var timer: Timer?
     private var customNames: [String: String] = [:]
     nonisolated(unsafe) private static var cache: [String: JsonlCache] = [:]
@@ -41,74 +44,136 @@ final class SessionManager {
     func startPolling(interval: TimeInterval = 5) {
         scan()
         timer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.scan() }
+            Task { @MainActor in self?.scan(historyDays: nil) }
         }
     }
 
-    func scan() {
+    /// Two-phase scan:
+    /// - Phase 1 (sync, instant): live sessions only — populates immediately so the
+    ///   sidebar has something to show when expanded.
+    /// - Phase 2 (async, background): history within `historyDays` (default = setting),
+    ///   merged into sessions when ready. Cached files skip re-parsing on subsequent runs.
+    func scan(historyDays: Int? = nil) {
         let snapshotNames = customNames
         let claudeDir = self.claudeDir
+        let days = historyDays ?? AppSettings.shared.historyHorizonDays
+
+        // Phase 1: live sessions sync.
+        let livesOnly = Self.scanLiveOnly(claudeDir: claudeDir, customNames: snapshotNames)
+        // Merge live sessions into the existing list — keep history that may already be loaded.
+        var working = sessions.filter { !$0.isAlive }   // strip prior live entries
+        let liveIds = Set(livesOnly.map(\.id))
+        working.removeAll { liveIds.contains($0.id) }   // also strip historical duplicates of new live
+        working.append(contentsOf: livesOnly)
+        sessions = Self.applySort(working)
+        NotificationManager.shared.observe(sessions: sessions)
+
+        // Phase 2: history async.
+        isLoadingHistory = true
         Task.detached(priority: .utility) {
-            let sessions = Self.scanSync(claudeDir: claudeDir, customNames: snapshotNames)
+            let history = Self.scanHistory(claudeDir: claudeDir, customNames: snapshotNames, days: days)
             await MainActor.run { [weak self] in
                 guard let self = self else { return }
-                self.sessions = sessions
-                NotificationManager.shared.observe(sessions: sessions)
+                // Merge history with existing live sessions.
+                let liveSet = Set(self.sessions.filter(\.isAlive).map(\.id))
+                var merged = self.sessions.filter(\.isAlive)
+                for entry in history where !liveSet.contains(entry.id) {
+                    merged.append(entry)
+                }
+                self.sessions = Self.applySort(merged)
+                self.isLoadingHistory = false
+                NotificationManager.shared.observe(sessions: self.sessions)
             }
         }
     }
 
-    nonisolated static func scanSync(claudeDir: URL, customNames: [String: String]) -> [SessionInfo] {
+    nonisolated static func applySort(_ s: [SessionInfo]) -> [SessionInfo] {
+        s.sorted {
+            if $0.isAlive != $1.isAlive { return $0.isAlive && !$1.isAlive }
+            if $0.isRecentlyActive != $1.isRecentlyActive { return $0.isRecentlyActive && !$1.isRecentlyActive }
+            let d0 = $0.lastActivityAt ?? .distantPast
+            let d1 = $1.lastActivityAt ?? .distantPast
+            return d0 > d1
+        }
+    }
+
+    /// Phase 1 — fast: only live sessions. Reads ~/.claude/sessions/*.json (small files,
+    /// <1KB each), no JSONL parsing. The JSONL stat-only check is cheap.
+    nonisolated static func scanLiveOnly(claudeDir: URL, customNames: [String: String]) -> [SessionInfo] {
         let sessionsDir = claudeDir.appendingPathComponent("sessions")
         let projectsDir = claudeDir.appendingPathComponent("projects")
 
-        // Filter for historical sessions: only those active in the last 30 days, and skip
-        // outlier files >100MB. This caps the first-scan cost on hosts with thousands of
-        // legacy sessions while still surfacing everything a normal user has touched recently.
-        let historyHorizon = Date().addingTimeInterval(-30 * 24 * 3600)
+        guard let files = try? FileManager.default.contentsOfDirectory(at: sessionsDir, includingPropertiesForKeys: nil) else {
+            return []
+        }
+        var result: [SessionInfo] = []
+        for file in files where file.pathExtension == "json" {
+            guard let data = try? Data(contentsOf: file),
+                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { continue }
+            let pid = json["pid"] as? Int ?? Int(file.deletingPathExtension().lastPathComponent) ?? 0
+            guard kill(Int32(pid), 0) == 0 else { continue }
+
+            let sessionId = json["sessionId"] as? String ?? ""
+            let cwd = json["cwd"] as? String ?? ""
+            let status = json["status"] as? String ?? "unknown"
+            let version = json["version"] as? String ?? ""
+            let startedAtMs = json["startedAt"] as? Double
+            let startedAt = startedAtMs.map { Date(timeIntervalSince1970: $0 / 1000) }
+
+            // Cache hit fast path — if we've seen this jsonl before with the same fingerprint, reuse parsed data.
+            let jsonlURL = projectsDir.appendingPathComponent(projectNameFor(cwd)).appendingPathComponent("\(sessionId).jsonl")
+            let (usage, model, aiTitle, mtime, _) = parseUsageStaticWithMeta(jsonlURL: jsonlURL)
+            let cost = Pricing.cost(for: usage, model: model)
+            let cacheHitRate: Double = {
+                let total = usage.cacheRead + usage.cacheCreation + usage.totalInput
+                guard total > 0 else { return 0 }
+                return Double(usage.cacheRead) / Double(total)
+            }()
+            let name = customNames[sessionId] ?? aiTitle ?? Self.shortPathStatic(cwd)
+            result.append(SessionInfo(
+                id: sessionId, pid: pid, sessionId: sessionId, name: name,
+                cwd: cwd, status: status, startedAt: startedAt,
+                lastActivityAt: mtime ?? Date(),
+                version: version, model: model, usage: usage, cost: cost,
+                cacheHitRate: cacheHitRate, isAlive: true
+            ))
+        }
+        return result
+    }
+
+    nonisolated static func projectNameFor(_ cwd: String) -> String {
+        // ~/.claude/projects encodes paths as "-Users-mjm-projects-Foo"
+        var s = cwd
+        if s.hasPrefix("/") { s = String(s.dropFirst()) }
+        return "-" + s.replacingOccurrences(of: "/", with: "-")
+    }
+
+    /// Phase 2 — full history scan within a horizon. Skips files older than horizon
+    /// and files >100MB. Uses the size:mtime cache for instant re-runs.
+    nonisolated static func scanHistory(claudeDir: URL, customNames: [String: String], days: Int) -> [SessionInfo] {
+        let projectsDir = claudeDir.appendingPathComponent("projects")
+        let horizon = Date().addingTimeInterval(-Double(days) * 24 * 3600)
         let maxFileBytes = 100 * 1024 * 1024
 
-        // Pass 1 — sessions/ contains one JSON per *currently-running* PID.
-        var liveBySessionId: [String: (pid: Int, status: String, version: String, startedAt: Date?, cwd: String)] = [:]
-        if let files = try? FileManager.default.contentsOfDirectory(at: sessionsDir, includingPropertiesForKeys: nil) {
-            for file in files where file.pathExtension == "json" {
-                guard let data = try? Data(contentsOf: file),
-                      let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { continue }
-                let pid = json["pid"] as? Int ?? Int(file.deletingPathExtension().lastPathComponent) ?? 0
-                guard kill(Int32(pid), 0) == 0 else { continue }
-                let sid = json["sessionId"] as? String ?? ""
-                let cwd = json["cwd"] as? String ?? ""
-                let status = json["status"] as? String ?? "unknown"
-                let version = json["version"] as? String ?? ""
-                let startedAtMs = json["startedAt"] as? Double
-                liveBySessionId[sid] = (pid, status, version, startedAtMs.map { Date(timeIntervalSince1970: $0 / 1000) }, cwd)
-            }
-        }
-
-        // Pass 2 — walk projects/ for JSONL files modified within the horizon.
-        var result: [SessionInfo] = []
         guard let projects = try? FileManager.default.contentsOfDirectory(at: projectsDir, includingPropertiesForKeys: nil) else {
             return []
         }
+        var result: [SessionInfo] = []
         for project in projects {
             var isDir: ObjCBool = false
             guard FileManager.default.fileExists(atPath: project.path, isDirectory: &isDir), isDir.boolValue else { continue }
             guard let jsonls = try? FileManager.default.contentsOfDirectory(at: project, includingPropertiesForKeys: [.contentModificationDateKey, .fileSizeKey]) else { continue }
 
             for url in jsonls where url.pathExtension == "jsonl" {
-                let sessionId = url.deletingPathExtension().lastPathComponent
-                let live = liveBySessionId[sessionId]
-                let isAlive = live != nil
-
-                // Cheap stat-only skip BEFORE we open the file
                 guard let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
                       let size = attrs[.size] as? Int,
                       let mtime = attrs[.modificationDate] as? Date else { continue }
                 if size > maxFileBytes { continue }
-                if !isAlive && mtime < historyHorizon { continue }
+                if mtime < horizon { continue }
 
+                let sessionId = url.deletingPathExtension().lastPathComponent
                 let (usage, model, aiTitle, lastModified, cwdFromJsonl) = parseUsageStaticWithMeta(jsonlURL: url)
-                let cwd = live?.cwd ?? cwdFromJsonl ?? Self.cwdFromProjectName(project.lastPathComponent)
+                let cwd = cwdFromJsonl ?? Self.cwdFromProjectName(project.lastPathComponent)
                 let cost = Pricing.cost(for: usage, model: model)
                 let cacheHitRate: Double = {
                     let total = usage.cacheRead + usage.cacheCreation + usage.totalInput
@@ -116,24 +181,16 @@ final class SessionManager {
                     return Double(usage.cacheRead) / Double(total)
                 }()
                 let name = customNames[sessionId] ?? aiTitle ?? Self.shortPathStatic(cwd)
-
-                let startedAt = live?.startedAt ?? lastModified
                 result.append(SessionInfo(
-                    id: sessionId, pid: live?.pid ?? 0, sessionId: sessionId, name: name,
-                    cwd: cwd, status: isAlive ? (live!.status) : "ended", startedAt: startedAt,
+                    id: sessionId, pid: 0, sessionId: sessionId, name: name,
+                    cwd: cwd, status: "ended", startedAt: lastModified,
                     lastActivityAt: lastModified ?? mtime,
-                    version: live?.version ?? "", model: model, usage: usage, cost: cost,
-                    cacheHitRate: cacheHitRate, isAlive: isAlive
+                    version: "", model: model, usage: usage, cost: cost,
+                    cacheHitRate: cacheHitRate, isAlive: false
                 ))
             }
         }
-        return result.sorted {
-            if $0.isAlive != $1.isAlive { return $0.isAlive && !$1.isAlive }
-            if $0.isRecentlyActive != $1.isRecentlyActive { return $0.isRecentlyActive && !$1.isRecentlyActive }
-            let d0 = $0.lastActivityAt ?? .distantPast
-            let d1 = $1.lastActivityAt ?? .distantPast
-            return d0 > d1
-        }
+        return result
     }
 
     nonisolated static func cwdFromProjectName(_ name: String) -> String {
