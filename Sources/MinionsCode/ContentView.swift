@@ -10,6 +10,13 @@ private let TEXT_PRIMARY = Color(red: 0.95, green: 0.93, blue: 0.86)
 private let TEXT_DIM = Color.white.opacity(0.5)
 private let TEXT_FAINT = Color.white.opacity(0.25)
 
+/// Two unified opacity levels for chrome (everything that's not the terminal
+/// itself). Top tier is the title-bar / sidebar-header row; mid tier is every
+/// other strip. Same color base, just two alphas — keeps the glass look
+/// consistent without losing visual hierarchy.
+private let CHROME_TOP_ALPHA: Double = 0.55
+private let CHROME_MID_ALPHA: Double = 0.45
+
 struct ContentView: View {
     @State private var manager = SessionManager.shared
     @State private var settings = AppSettings.shared
@@ -145,6 +152,9 @@ struct ContentView: View {
             window.isOpaque = false
             window.backgroundColor = .clear
             window.titlebarAppearsTransparent = true
+            // Extend SwiftUI content all the way under the traffic lights so the
+            // statusStrip occupies the same row — no empty title-bar strip above it.
+            window.styleMask.insert(.fullSizeContentView)
         } else {
             window.isOpaque = true
             window.backgroundColor = NSColor(red: 0.04, green: 0.04, blue: 0.05, alpha: 1)
@@ -167,7 +177,7 @@ struct ContentView: View {
             Divider().background(Color.white.opacity(0.05))
             sidebarFooter
         }
-        .background(BG_DARK.opacity(settings.translucentBackground ? 0.35 : 1))
+        .background(BG_DARKEST.opacity(settings.translucentBackground ? CHROME_MID_ALPHA : 1))
     }
 
     private var filterBar: some View {
@@ -338,8 +348,8 @@ struct ContentView: View {
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 14)
-        // Match statusStrip — the top strip is the most opaque layer.
-        .background(BG_DARKEST.opacity(settings.translucentBackground ? 0.78 : 0))
+        // Top tier — same alpha as statusStrip for a continuous title-bar row.
+        .background(BG_DARKEST.opacity(settings.translucentBackground ? CHROME_TOP_ALPHA : 0))
     }
 
     private var globalStats: some View {
@@ -449,7 +459,6 @@ struct ContentView: View {
         VStack(spacing: 0) {
             statusStrip
             tabBar
-            Divider().background(Color.white.opacity(0.05))
             ZStack {
                 if let tid = activeTerminalId, let terminal = terminals[tid] {
                     VStack(spacing: 0) {
@@ -503,8 +512,8 @@ struct ContentView: View {
         .padding(.leading, 76)
         .padding(.trailing, 14)
         .padding(.vertical, 9)
-        // Most opaque layer — anchors the window visually.
-        .background(BG_DARKEST.opacity(settings.translucentBackground ? 0.78 : 1))
+        // Top tier — anchors the window's first row alongside the traffic lights.
+        .background(BG_DARKEST.opacity(settings.translucentBackground ? CHROME_TOP_ALPHA : 1))
     }
 
     private func statusBadge(label: String, value: String, tint: Color) -> some View {
@@ -577,7 +586,7 @@ struct ContentView: View {
             .padding(.trailing, 8)
         }
         .frame(height: 38)
-        .background(BG_DARK.opacity(settings.translucentBackground ? 0.35 : 1))
+        .background(BG_DARKEST.opacity(settings.translucentBackground ? CHROME_MID_ALPHA : 1))
     }
 
     private func nameForTerminal(_ t: TerminalSession) -> String {
@@ -651,7 +660,7 @@ struct ContentView: View {
             }
         }
         .padding(.horizontal, 14).padding(.vertical, 8)
-        .background(BG_DARK.opacity(settings.translucentBackground ? 0.35 : 1))
+        .background(BG_DARKEST.opacity(settings.translucentBackground ? CHROME_MID_ALPHA : 1))
     }
 
     private var emptyState: some View {
