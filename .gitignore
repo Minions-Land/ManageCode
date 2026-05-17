@@ -1,13 +1,8 @@
-# Build artifacts
-.build/
-.swiftpm/
-*.xcodeproj/
-DerivedData/
+# Rust build artifacts
+target/
+**/*.rs.bk
 
-# Iconset (regenerated from script)
-Resources/AppIcon.iconset/
-
-# macOS
+# OS
 .DS_Store
 *.swp
 *.swo

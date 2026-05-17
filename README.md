@@ -1,40 +1,161 @@
 # MinionsCode
 
-A native macOS terminal app focused on managing Claude Code sessions. Real shell + Claude Code superpowers in one window.
+A cross-platform TUI dashboard for [Claude Code](https://claude.com/claude-code) sessions.
+Single static-ish Rust binary, no embedded terminal — selecting a session `exec`s
+`claude --resume <id>` directly in your current tty, so the conversation keeps full
+input fidelity (paste, mouse, ANSI, the works).
 
-## Features
-
-- **Native terminal** — SwiftTerm-backed, real `$SHELL` by default
-- **Claude Code session tracking** — every active `claude` process is auto-detected from `~/.claude/sessions/` and `~/.claude/projects/`
-- **Token + cost dashboard** — input / cache read / cache write / output broken out separately, with the "saved by cache" delta
-- **AI-aware search** — literal filter first, falls back to a one-shot Haiku query when the literal filter misses
-- **Session grouping by directory** — sessions grouped by `cwd`, expandable
-- **Custom names** — override the auto-derived name (Claude's `ai-title` from JSONL)
-- **Quick actions** — new shell, new claude, resume existing session, run claude inside an open shell
-- **NotchAgent black/gold theme**
-
-## Build
-
-```bash
-swift build -c release
-./install.sh        # installs to ~/Applications/MinionsCode.app
-open ~/Applications/MinionsCode.app
+```
+┌─ MinionsCode ──── 49 sessions · 1 active · $2916.45 total ─────────────────┐
+│ ▾ ~/Project/05_2026/MinionsCode                                    ●1   3  │
+│    ● busy   rust-tui refresh strategy           sonnet-4.6   $  2.41   2m  │
+│    ○ rename session names persistence            opus        $  0.47  14h  │
+│ ▾ ~/Project/03_2026/Forecasting_Reasoning                              5  │
+│    ○ 清理 Zone 的无用 file                       opus        $  0.75   3d  │
+│    ...                                                                     │
+└────────────────────────────────────────────────────────────────────────────┘
 ```
 
-Requires macOS 14+ and an Apple Silicon Mac.
+## Install
 
-## Stack
+```bash
+git clone https://github.com/ChengAoShen/MinionsCode.git
+cd MinionsCode
+./install.sh                          # builds release + installs to ~/.local/bin/minionscode
+```
 
-- Swift 6.3, SwiftUI + AppKit
-- [SwiftTerm](https://github.com/migueldeicaza/SwiftTerm) for terminal rendering
-- Reads Claude Code's local files directly — no API calls, no daemon
+Or manually:
 
-## Pricing
+```bash
+cargo build --release
+cp target/release/minionscode ~/.local/bin/
+```
 
-Costs are computed using public Anthropic pricing for Claude 4.x:
+Requires Rust 1.74+. Works on Linux, macOS, and WSL.
 
-| Model | Input | Cache read | Cache write | Output |
-|-------|-------|------------|-------------|--------|
-| Opus 4.7 | $15/MTok | $1.5/MTok | $18.75/MTok | $75/MTok |
-| Sonnet 4.6 | $3/MTok | $0.3/MTok | $3.75/MTok | $15/MTok |
-| Haiku 4.5 | $0.8/MTok | $0.08/MTok | $1/MTok | $4/MTok |
+## Run
+
+```bash
+minionscode                # launch the TUI
+minionscode --list         # non-interactive: print sessions and exit
+minionscode --days 7       # only look back 7 days of history (default 30)
+minionscode --version
+```
+
+## Keys
+
+**Navigation**
+
+| Key | Action |
+|-----|--------|
+| `↑ ↓` / `j k` | navigate |
+| `g` / `G` | first / last |
+| `space` / `tab` | collapse / expand current group |
+| `o` / `O` | collapse inactive / expand all groups |
+| `T` | toggle grouping by directory |
+
+**Session actions**
+
+| Key | Action |
+|-----|--------|
+| `⏎` | resume selected session (`claude --resume`) |
+| `n` | new claude in the selected cwd (defaults) |
+| `N` | new claude with an options form (model, dangerous, sandbox, verbose, add-dir) |
+| `s` | new shell in the selected cwd |
+| `r` | rename session (saved to `~/.minionscode/session-names.json`) |
+
+**Search & AI**
+
+| Key | Action |
+|-----|--------|
+| `/` | literal filter; `⏎` falls back to AI search if nothing matches |
+| `\` | force AI search using the current filter buffer (calls `claude --print --model haiku`) |
+| `A` | auto-name up to 12 unnamed sessions via Haiku |
+
+**Maintenance**
+
+| Key | Action |
+|-----|--------|
+| `D` | delete junk sessions (tmp / empty) |
+| `E` | delete empty sessions |
+| `M` | toggle desktop notifications |
+| `R` | refresh now |
+| `?` | help overlay |
+| `q` / `Ctrl-C` | quit |
+
+## Layout
+
+Responsive — adapts to terminal size:
+
+- **Wide** (≥ 110 cols): list + detail side-by-side
+- **Stacked** (≥ 70 cols, ≥ 24 rows): list on top, compact detail below
+- **Narrow** (smaller): list only; selected session summary collapses into the footer
+
+## Status display
+
+| Color | Meaning |
+|-------|---------|
+| 🟢 `●` green | alive, `idle` (waiting for input) |
+| 🟠 `●` amber | alive, `busy` (executing / tool call) |
+| 🟣 `●` purple | alive, `thinking` (extended thinking) |
+| 🟡 `●` gold | exited but recently active |
+| ⚪ `○` muted | old, ended |
+
+Status strings come directly from `~/.claude/sessions/<id>.json` — whatever Claude
+Code writes is what you see.
+
+## Refresh strategy
+
+Three layers, designed so updates feel instant without hammering disk:
+
+1. **File watcher** (`notify` crate — inotify / FSEvents / kqueue). Any change
+   under `~/.claude/sessions/` or `~/.claude/projects/` triggers a debounced
+   (~180 ms) re-scan.
+2. **PID / status sweep** every ~1.5 s. Re-reads only the small `sessions/*.json`
+   files and verifies PIDs via `kill -0` — picks up `busy ↔ idle` and
+   process-died transitions without touching JSONL.
+3. **Fallback full scan** every 30 s (5 s if the watcher failed to attach, e.g.
+   on a filesystem without inotify support).
+
+End-to-end, a status change in a live session typically shows up in well under
+one second.
+
+## Notifications
+
+Fires a desktop notification when a live `claude` session transitions from
+`busy` → `idle` after having been busy for ≥ 8 s, with a 30 s per-session
+cooldown — designed to skip short tool turns and only signal completion of a
+real conversation.
+
+Backend:
+- **macOS**: `osascript` (native banner)
+- **Linux**: `notify-send`
+- **everywhere**: terminal bell (`\x07`)
+
+Toggle with `M` inside the TUI.
+
+## What it reads
+
+- `~/.claude/sessions/*.json` — live PIDs (`kill -0` to verify)
+- `~/.claude/projects/<encoded-cwd>/*.jsonl` — per-session token usage,
+  parsed and cached by `size:mtime`
+
+Token costs use public Anthropic pricing (Opus / Sonnet / Haiku, inputs /
+outputs / cache reads / cache writes).
+
+## Custom claude binary
+
+Auto-discovery checks in order:
+
+1. `$CLAUDE_BIN`
+2. `/opt/homebrew/bin/claude`
+3. `/usr/local/bin/claude`
+4. `~/.claude/local/bin/claude`
+5. `~/.local/bin/claude`
+6. `$PATH`
+
+Set `CLAUDE_BIN=/path/to/claude` to override.
+
+## License
+
+MIT
