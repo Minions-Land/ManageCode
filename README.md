@@ -15,9 +15,11 @@
 └────────────────────────────────────────────────────────────────────────────┘
 ```
 
-One binary. Pick a session, press `Enter`, you're in `claude --resume`.
-Detach with `Ctrl-b d`, the conversation keeps running, pick another one,
-come back later — all without opening a single new window.
+One binary. Pick a session, press `Enter`, and it opens **right inside the
+dashboard** — the list shrinks to a sidebar and a live terminal runs `claude`
+next to it. Press `Ctrl-a` to hop back to the sidebar (the session keeps
+running), pick another one, jump back in later — all in a single window, no
+full-screen takeover.
 
 ---
 
@@ -49,36 +51,42 @@ You'll see every session on this machine — currently alive at the top,
 recent below, then everything else from the last 30 days. Press `?` any
 time for the full keymap.
 
-The basics:
+The basics (vim-style):
 
 | Key | What happens |
 |-----|--------------|
-| `↑` / `↓` | move the selection |
-| `Enter` | resume the highlighted session |
+| `↑` / `↓` or `j` / `k` | move the selection |
+| `Enter` | resume the highlighted session in the embedded terminal |
+| `i` / `l` | jump focus into the terminal pane |
+| `Ctrl-a` | from the terminal, return focus to the sidebar (configurable) |
 | `n` | start a fresh `claude` in that session's directory |
 | `s` | drop into a shell in that directory |
 | `/` | filter by name / path; `Enter` falls back to AI search if nothing matches |
+| `:` | settings (change the terminal escape prefix) |
 | `q` | quit |
+
+The mouse works too: click / drag / scroll inside the terminal pane is
+forwarded to `claude` (or tmux); in the sidebar the wheel moves the selection
+and a click on the pane focuses it.
 
 ## Multi-session, made simple
 
 If you have `tmux` installed (Homebrew: `brew install tmux`, apt:
 `sudo apt install tmux`), ManageCode automatically wraps every session
-in a managed background process. That means:
+in a managed background process. The terminal pane attaches to it, so:
 
-1. `Enter` on session A → talk for a while → `Ctrl-b d`
-2. The TUI reappears. Session A is now marked `▶` (running in the
-   background).
+1. `Enter` on session A → talk for a while → `Ctrl-a` back to the sidebar
+2. Session A stays marked `▶` (running in the background).
 3. `Enter` on session B → talk to a different model in a different repo
-   → `Ctrl-b d` again.
+   → `Ctrl-a` again.
 4. Both are running. `Enter` on A re-attaches *exactly* where you left
-   off. Switch back and forth all day.
+   off. Switch back and forth all day — never leaving the dashboard.
 
 To force-end a backgrounded session: select it, press `K`, confirm.
 
-Without `tmux`, ManageCode still works — it just runs claude directly,
-one at a time. You exit claude the normal way (`/exit`, `Ctrl-D`) and
-you're back at the dashboard.
+Without `tmux`, ManageCode still works — the embedded terminal just runs
+claude directly. Exit claude the normal way (`/exit`, `Ctrl-D`) and the
+pane closes back to the dashboard.
 
 ## Highlights
 

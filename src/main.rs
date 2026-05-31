@@ -1,14 +1,15 @@
 mod ai;
 mod app;
+mod config;
 mod models;
 mod notifications;
+mod pty;
 mod scanner;
 mod tmux;
 mod ui;
 mod watcher;
 
-use std::io::{self, Write};
-use std::process::Command;
+use std::io;
 use std::time::Duration;
 
 use anyhow::Result;
@@ -20,6 +21,7 @@ use crossterm::{
 use ratatui::{backend::CrosstermBackend, Terminal};
 
 use crate::app::{App, ConfirmAction, LaunchForm, Mode, PendingExec};
+use crate::pty::{TermSession, TerminalSpec};
 
 fn parse_args() -> Args {
     let mut a = Args::default();
@@ -94,6 +96,7 @@ fn main() -> Result<()> {
     if args.list_only {
         return run_list(args.history_days);
     }
+    install_panic_hook();
     let mut app = App::new(args.history_days);
 
     loop {
@@ -106,19 +109,12 @@ fn main() -> Result<()> {
 
         match exit_request {
             ExitRequest::Quit => return Ok(()),
-            ExitRequest::Exec(pending) => {
-                run_exec(pending);
-                // After the child exits, return to the TUI and trigger a fresh scan.
-                app.kick_scan();
-                continue;
-            }
         }
     }
 }
 
 enum ExitRequest {
     Quit,
-    Exec(PendingExec),
 }
 
 fn run_list(history_days: i64) -> Result<()> {
@@ -166,6 +162,17 @@ fn truncate_str(s: &str, max: usize) -> String {
     out
 }
 
+/// Restore the terminal (raw mode, alternate screen, mouse capture) if we panic
+/// mid-render, so the user's shell isn't left in a broken state.
+fn install_panic_hook() {
+    let original = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let _ = disable_raw_mode();
+        let _ = execute!(io::stdout(), LeaveAlternateScreen, DisableMouseCapture);
+        original(info);
+    }));
+}
+
 fn enter_tui() -> Result<()> {
     enable_raw_mode()?;
     let mut out = io::stdout();
@@ -175,7 +182,10 @@ fn enter_tui() -> Result<()> {
 
 fn leave_tui<B: ratatui::backend::Backend + std::io::Write>(
     terminal: &mut Terminal<B>,
-) -> Result<()> {
+) -> Result<()>
+where
+    <B as ratatui::backend::Backend>::Error: std::error::Error + Send + Sync + 'static,
+{
     disable_raw_mode()?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen, DisableMouseCapture)?;
     terminal.show_cursor()?;
@@ -185,21 +195,67 @@ fn leave_tui<B: ratatui::backend::Backend + std::io::Write>(
 fn run_loop<B: ratatui::backend::Backend>(
     terminal: &mut Terminal<B>,
     app: &mut App,
-) -> Result<ExitRequest> {
-    let tick = Duration::from_millis(120);
+) -> Result<ExitRequest>
+where
+    <B as ratatui::backend::Backend>::Error: std::error::Error + Send + Sync + 'static,
+{
     loop {
+        // Keep the embedded terminal sized to its pane and alive. The pane size
+        // is whatever the renderer measured last frame (see app.term_size).
+        if app.has_terminal() {
+            let (_x, _y, cols, rows) = app.term_area.get();
+            service_terminal(app, rows, cols);
+        }
+
         terminal.draw(|f| ui::draw(f, app))?;
         app.tick();
 
+        // The embedded terminal updates asynchronously, so poll faster while it
+        // is on screen for a responsive feel.
+        let tick = if app.has_terminal() {
+            Duration::from_millis(16)
+        } else {
+            Duration::from_millis(120)
+        };
+
         if event::poll(tick)? {
-            if let Event::Key(key) = event::read()? {
-                if key.kind != KeyEventKind::Press {
-                    continue;
+            match event::read()? {
+                Event::Key(key) => {
+                    if key.kind != KeyEventKind::Press {
+                        continue;
+                    }
+                    if let Some(req) = handle_key(app, key.code, key.modifiers) {
+                        return Ok(req);
+                    }
                 }
-                if let Some(req) = handle_key(app, key.code, key.modifiers) {
-                    return Ok(req);
+                Event::Mouse(me) => handle_mouse(app, me),
+                _ => {}
+            }
+        }
+    }
+}
+
+/// Spawn a queued terminal once the pane size is known, keep it resized, and
+/// drop it when the child exits.
+fn service_terminal(app: &mut App, rows: u16, cols: u16) {
+    if app.term.is_none() {
+        if let Some(spec) = app.pending_terminal.take() {
+            let cmd = spec.build_command();
+            match TermSession::spawn(cmd, rows, cols, spec.title.clone()) {
+                Ok(t) => app.term = Some(t),
+                Err(e) => {
+                    app.flash(format!("terminal failed: {e}"));
+                    app.close_terminal();
+                    return;
                 }
             }
+        }
+    }
+    if let Some(t) = app.term.as_mut() {
+        t.resize(rows, cols);
+        if !t.is_alive() {
+            app.close_terminal();
+            app.kick_scan();
         }
     }
 }
@@ -209,6 +265,13 @@ fn handle_key(
     code: KeyCode,
     mods: KeyModifiers,
 ) -> Option<ExitRequest> {
+    // Terminal mode swallows ALL keys (including Ctrl-C, which must reach the
+    // child) except the escape prefix. Checked before the global Ctrl-C quit.
+    if matches!(app.mode, Mode::Terminal) {
+        handle_terminal(app, code, mods);
+        return None;
+    }
+
     // Ctrl-C always quits, regardless of mode.
     if mods.contains(KeyModifiers::CONTROL) && code == KeyCode::Char('c') {
         return Some(ExitRequest::Quit);
@@ -235,6 +298,58 @@ fn handle_key(
             None
         }
         Mode::Launch(_) => handle_launch(app, code),
+        Mode::Settings => {
+            handle_settings(app, code);
+            None
+        }
+        // Reached only via the early return above; arm kept for exhaustiveness.
+        Mode::Terminal => None,
+    }
+}
+
+/// Route keys to the embedded terminal. The escape prefix (hardcoded `Ctrl-a`
+/// for now; configurable in M4) returns focus to the sidebar without killing
+/// the session.
+fn handle_terminal(app: &mut App, code: KeyCode, mods: KeyModifiers) {
+    if app.config.escape_prefix.matches(code, mods) {
+        app.blur_terminal();
+        return;
+    }
+    if let Some(t) = app.term.as_mut() {
+        t.send_key(code, mods);
+    }
+}
+
+/// Mouse routing: forward to the embedded terminal when it's focused and the
+/// pointer is over the pane; in the sidebar, the wheel moves the selection and
+/// a click on the terminal pane focuses it.
+fn handle_mouse(app: &mut App, me: crossterm::event::MouseEvent) {
+    use crossterm::event::{MouseButton, MouseEventKind as K};
+
+    let (px, py, pw, ph) = app.term_area.get();
+    let over_pane = app.has_terminal()
+        && me.column >= px
+        && me.column < px.saturating_add(pw)
+        && me.row >= py
+        && me.row < py.saturating_add(ph);
+
+    match app.mode {
+        Mode::Terminal => {
+            if over_pane {
+                let col = me.column - px + 1;
+                let row = me.row - py + 1;
+                if let Some(t) = app.term.as_mut() {
+                    t.send_mouse(&me, col, row);
+                }
+            }
+        }
+        Mode::Browse => match me.kind {
+            K::ScrollDown => app.move_selection(1),
+            K::ScrollUp => app.move_selection(-1),
+            K::Down(MouseButton::Left) if over_pane => app.focus_terminal(),
+            _ => {}
+        },
+        _ => {}
     }
 }
 
@@ -266,7 +381,7 @@ fn handle_launch(app: &mut App, code: KeyCode) -> Option<ExitRequest> {
             let cwd = form.cwd.clone();
             let args = form.args();
             app.mode = Mode::Browse;
-            return Some(ExitRequest::Exec(PendingExec::Custom { cwd, args }));
+            open_terminal_for(app, PendingExec::Custom { cwd, args });
         }
         _ => {}
     }
@@ -295,13 +410,13 @@ fn handle_browse(
             if let Some(s) = app.selected_session() {
                 let id = s.id.clone();
                 let cwd = s.cwd.clone();
-                return Some(ExitRequest::Exec(PendingExec::Resume { id, cwd }));
+                open_terminal_for(app, PendingExec::Resume { id, cwd });
             }
         }
         KeyCode::Char('n') => {
             if let Some(s) = app.selected_session() {
                 let cwd = s.cwd.clone();
-                return Some(ExitRequest::Exec(PendingExec::NewClaude { cwd }));
+                open_terminal_for(app, PendingExec::NewClaude { cwd });
             }
         }
         KeyCode::Char('N') => {
@@ -319,7 +434,14 @@ fn handle_browse(
         KeyCode::Char('s') => {
             if let Some(s) = app.selected_session() {
                 let cwd = s.cwd.clone();
-                return Some(ExitRequest::Exec(PendingExec::NewShell { cwd }));
+                open_terminal_for(app, PendingExec::NewShell { cwd });
+            }
+        }
+        // vim-style: move focus into the terminal pane (insert). No-op unless a
+        // terminal is open.
+        KeyCode::Char('i') | KeyCode::Char('l') => {
+            if app.has_terminal() {
+                app.focus_terminal();
             }
         }
         KeyCode::Char('/') => {
@@ -366,6 +488,9 @@ fn handle_browse(
         }
         KeyCode::Char('?') => {
             app.mode = Mode::Help;
+        }
+        KeyCode::Char(':') => {
+            app.open_settings();
         }
         KeyCode::Char('\\') => {
             // Prompt-less AI search: use current filter buffer as the query.
@@ -463,6 +588,39 @@ fn handle_confirm(app: &mut App, code: KeyCode) {
     }
 }
 
+fn handle_settings(app: &mut App, code: KeyCode) {
+    match code {
+        KeyCode::Esc => {
+            app.settings_input.clear();
+            app.mode = Mode::Browse;
+        }
+        KeyCode::Enter => match config::KeySpec::parse(&app.settings_input) {
+            Ok(spec) if spec.is_reserved() => {
+                app.flash("that key is reserved (Ctrl-C / Ctrl-D)");
+            }
+            Ok(spec) => {
+                app.config.escape_prefix = spec;
+                match config::save(&app.config) {
+                    Ok(()) => app.flash("prefix saved"),
+                    Err(e) => app.flash(format!("save failed: {e}")),
+                }
+                app.settings_input.clear();
+                app.mode = Mode::Browse;
+            }
+            Err(e) => app.flash(format!("invalid key: {e}")),
+        },
+        KeyCode::Backspace => {
+            app.settings_input.pop();
+        }
+        KeyCode::Char(c) => {
+            if app.settings_input.chars().count() < 24 {
+                app.settings_input.push(c);
+            }
+        }
+        _ => {}
+    }
+}
+
 fn find_claude_binary() -> Option<String> {
     if let Ok(p) = std::env::var("CLAUDE_BIN") {
         if !p.is_empty() {
@@ -486,128 +644,102 @@ fn find_claude_binary() -> Option<String> {
     Some("claude".into())
 }
 
-fn run_exec(pending: PendingExec) {
-    let _ = io::stdout().flush();
-    // tmux mode: only when tmux is installed AND we're not already inside tmux
-    // (we don't try to nest — nested tmux sessions are a UX trap).
+/// Open an embedded terminal for a launch intent. When tmux is available the
+/// command runs inside a detached tmux session that we `tmux attach` to in the
+/// PTY (so it persists across detach/quit); otherwise the command runs directly
+/// in the PTY.
+fn open_terminal_for(app: &mut App, pending: PendingExec) {
     let use_tmux = tmux::available() && !tmux::inside_tmux();
-    if use_tmux {
-        run_exec_tmux(pending);
-    } else {
-        run_exec_direct(pending);
-    }
-}
-
-fn run_exec_tmux(pending: PendingExec) {
-    match pending {
+    let claude = find_claude_binary();
+    let spec = match pending {
         PendingExec::Resume { id, cwd } => {
-            let Some(claude) = find_claude_binary() else {
-                eprintln!("claude binary not found");
-                pause();
+            let Some(claude) = claude else {
+                app.flash("claude binary not found");
                 return;
             };
-            let name = tmux::resume_name(&id);
-            let cmd = tmux::join_command(&[&claude, "--resume", &id]);
-            tmux::ensure_session(&name, &cwd, &cmd);
-            print_attach_hint(&name);
-            tmux::attach(&name);
-        }
-        PendingExec::NewClaude { cwd } => {
-            let Some(claude) = find_claude_binary() else {
-                eprintln!("claude binary not found");
-                pause();
-                return;
-            };
-            let name = tmux::new_claude_name();
-            let cmd = tmux::sh_quote(&claude);
-            tmux::ensure_session(&name, &cwd, &cmd);
-            print_attach_hint(&name);
-            tmux::attach(&name);
-        }
-        PendingExec::NewShell { cwd } => {
-            let name = tmux::new_shell_name();
-            tmux::ensure_session_shell(&name, &cwd);
-            print_attach_hint(&name);
-            tmux::attach(&name);
-        }
-        PendingExec::Custom { cwd, args } => {
-            let Some(claude) = find_claude_binary() else {
-                eprintln!("claude binary not found");
-                pause();
-                return;
-            };
-            let name = tmux::new_claude_name();
-            let mut parts: Vec<&str> = Vec::with_capacity(1 + args.len());
-            parts.push(&claude);
-            for a in &args {
-                parts.push(a);
-            }
-            let cmd = tmux::join_command(&parts);
-            tmux::ensure_session(&name, &cwd, &cmd);
-            print_attach_hint(&name);
-            tmux::attach(&name);
-        }
-    }
-}
-
-fn print_attach_hint(name: &str) {
-    // One-line hint before tmux takes the screen — visible for a moment so
-    // first-time users learn how to detach. tmux's own banner clears it.
-    let _ = writeln!(
-        io::stdout(),
-        "→ tmux session {}  (Ctrl-b d to detach back to ManageCode)",
-        name
-    );
-    let _ = io::stdout().flush();
-}
-
-fn run_exec_direct(pending: PendingExec) {
-    match pending {
-        PendingExec::Resume { id, cwd } => {
-            if let Some(claude) = find_claude_binary() {
-                let mut cmd = Command::new(claude);
-                cmd.arg("--resume").arg(id);
-                cmd.current_dir(&cwd);
-                let _ = cmd.status();
+            if use_tmux {
+                let name = tmux::resume_name(&id);
+                let cmd = tmux::join_command(&[&claude, "--resume", &id]);
+                tmux::ensure_session(&name, &cwd, &cmd);
+                attach_spec(&name, &cwd, "claude")
             } else {
-                eprintln!("claude binary not found in PATH or known locations");
-                pause();
+                TerminalSpec {
+                    cwd,
+                    argv: vec![claude, "--resume".into(), id],
+                    title: "claude".into(),
+                }
             }
         }
         PendingExec::NewClaude { cwd } => {
-            if let Some(claude) = find_claude_binary() {
-                let mut cmd = Command::new(claude);
-                cmd.current_dir(&cwd);
-                let _ = cmd.status();
+            let Some(claude) = claude else {
+                app.flash("claude binary not found");
+                return;
+            };
+            if use_tmux {
+                let name = tmux::new_claude_name();
+                let cmd = tmux::sh_quote(&claude);
+                tmux::ensure_session(&name, &cwd, &cmd);
+                attach_spec(&name, &cwd, "claude")
             } else {
-                eprintln!("claude binary not found in PATH or known locations");
-                pause();
+                TerminalSpec {
+                    cwd,
+                    argv: vec![claude],
+                    title: "claude".into(),
+                }
             }
         }
         PendingExec::NewShell { cwd } => {
-            let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
-            let mut cmd = Command::new(shell);
-            cmd.arg("-l");
-            cmd.current_dir(&cwd);
-            let _ = cmd.status();
-        }
-        PendingExec::Custom { cwd, args } => {
-            if let Some(claude) = find_claude_binary() {
-                let mut cmd = Command::new(claude);
-                cmd.args(args);
-                cmd.current_dir(&cwd);
-                let _ = cmd.status();
+            if use_tmux {
+                let name = tmux::new_shell_name();
+                tmux::ensure_session_shell(&name, &cwd);
+                attach_spec(&name, &cwd, "shell")
             } else {
-                eprintln!("claude binary not found");
-                pause();
+                TerminalSpec {
+                    cwd,
+                    argv: vec![],
+                    title: "shell".into(),
+                }
             }
         }
-    }
+        PendingExec::Custom { cwd, args } => {
+            let Some(claude) = claude else {
+                app.flash("claude binary not found");
+                return;
+            };
+            if use_tmux {
+                let name = tmux::new_claude_name();
+                let mut parts: Vec<&str> = Vec::with_capacity(1 + args.len());
+                parts.push(&claude);
+                for a in &args {
+                    parts.push(a);
+                }
+                let cmd = tmux::join_command(&parts);
+                tmux::ensure_session(&name, &cwd, &cmd);
+                attach_spec(&name, &cwd, "claude")
+            } else {
+                let mut argv = vec![claude];
+                argv.extend(args);
+                TerminalSpec {
+                    cwd,
+                    argv,
+                    title: "claude".into(),
+                }
+            }
+        }
+    };
+    app.request_terminal(spec);
 }
 
-fn pause() {
-    eprint!("\npress enter to return to ManageCode…");
-    let _ = io::stderr().flush();
-    let mut buf = String::new();
-    let _ = io::stdin().read_line(&mut buf);
+/// A TerminalSpec that attaches to an existing tmux session inside the PTY.
+fn attach_spec(name: &str, cwd: &str, title: &str) -> TerminalSpec {
+    TerminalSpec {
+        cwd: cwd.to_string(),
+        argv: vec![
+            "tmux".into(),
+            "attach-session".into(),
+            "-t".into(),
+            name.to_string(),
+        ],
+        title: title.to_string(),
+    }
 }
