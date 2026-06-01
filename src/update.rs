@@ -73,9 +73,18 @@ fn parse_semver(s: &str) -> Option<(u32, u32, u32)> {
 }
 
 /// Run the published install script to replace this binary with the latest
-/// release. Inherits stdio so the user sees the installer's own output.
+/// release. Inherits stdio so the user sees the installer's own output. Always
+/// proceeds (the user asked explicitly); when a newer tag is known it is shown,
+/// otherwise we reinstall the latest without assuming we're up to date — a
+/// failed version check (offline, rate-limited) must not silently skip it.
 pub fn run_update() -> std::io::Result<std::process::ExitStatus> {
-    println!("Updating ManageCode (current v{}) …", current_version());
+    match latest_if_newer() {
+        Some(tag) => println!("Updating ManageCode v{} → {tag} …", current_version()),
+        None => println!(
+            "Reinstalling the latest ManageCode (current v{}) …",
+            current_version()
+        ),
+    }
     let script =
         format!("curl -fsSL https://raw.githubusercontent.com/{REPO}/main/install.sh | bash");
     Command::new("bash").arg("-c").arg(&script).status()
