@@ -8,7 +8,7 @@ use ratatui::{
 };
 use tui_term::widget::PseudoTerminal;
 
-use crate::app::{App, LaunchForm, Mode, Row};
+use crate::app::{App, LaunchForm, Mode, Row, RowHit};
 use crate::models::{model_short, short_path, SessionInfo};
 
 // NotchAgent palette: deep black + warm gold + smoke gray.
@@ -277,6 +277,8 @@ fn draw_session_list(f: &mut Frame, area: Rect, app: &App, tier: Layoutness) {
     f.render_widget(block, area);
 
     let rows = app.visible_rows();
+    // Reset the click hit-map; it is rebuilt as rows are drawn below.
+    app.list_hits.borrow_mut().clear();
     if rows.is_empty() {
         let msg = if app.scanning {
             "scanning ~/.claude…"
@@ -355,6 +357,9 @@ fn draw_session_list(f: &mut Frame, area: Rect, app: &App, tier: Layoutness) {
 
         match row {
             Row::Header { cwd, total, alive, collapsed } => {
+                app.list_hits
+                    .borrow_mut()
+                    .push((y, 1, RowHit::Header(cwd.clone())));
                 draw_group_header(
                     f,
                     Rect {
@@ -370,6 +375,9 @@ fn draw_session_list(f: &mut Frame, area: Rect, app: &App, tier: Layoutness) {
                 );
             }
             Row::Session(real_idx) => {
+                app.list_hits
+                    .borrow_mut()
+                    .push((y, h, RowHit::Session(*real_idx)));
                 let session = &app.sessions[*real_idx];
                 let selected = selected_session_real == Some(*real_idx);
                 let tmux_backed = app.tmux_backed.contains(&session.id);

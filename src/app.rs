@@ -1,4 +1,4 @@
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::sync::mpsc;
 use std::thread;
@@ -23,6 +23,16 @@ pub enum Row {
         collapsed: bool,
     },
     Session(usize), // index into App.sessions
+}
+
+/// A clickable target in the session list, recorded by the renderer each frame
+/// so mouse clicks can be mapped back to a row.
+#[derive(Clone)]
+pub enum RowHit {
+    /// A session row — holds the real index into `App.sessions`.
+    Session(usize),
+    /// A group header — holds the group's cwd.
+    Header(String),
 }
 
 /// Top-level UI mode.
@@ -243,6 +253,11 @@ pub struct App {
     /// Inner content rect of the terminal pane as (x, y, cols, rows), written by
     /// the renderer each frame; used to resize the PTY and map mouse coordinates.
     pub term_area: Cell<(u16, u16, u16, u16)>,
+    /// Per-frame hit map for the session list: (y, height, target). Written by
+    /// the renderer, read by the mouse handler to resolve clicks to rows.
+    pub list_hits: RefCell<Vec<(u16, u16, RowHit)>>,
+    /// Last left-click (visible-list position, when) for double-click detection.
+    pub last_click: Option<(usize, Instant)>,
     /// User configuration (escape prefix, etc.).
     pub config: Config,
     /// Editing buffer for the settings overlay.
@@ -307,6 +322,8 @@ impl App {
             term: None,
             pending_terminal: None,
             term_area: Cell::new((0, 0, 80, 24)),
+            list_hits: RefCell::new(Vec::new()),
+            last_click: None,
             config: crate::config::load(),
             settings_input: String::new(),
             settings_budget_input: String::new(),
@@ -721,6 +738,27 @@ impl App {
     /// Is a terminal pane currently on screen (open or about to open)?
     pub fn has_terminal(&self) -> bool {
         self.term.is_some() || self.pending_terminal.is_some()
+    }
+
+    /// Select the session with this real index (clicked in the list), if it is
+    /// currently visible. Returns the visible-list position chosen.
+    pub fn select_by_real_index(&mut self, real_idx: usize) -> Option<usize> {
+        let pos = self
+            .visible_session_indices()
+            .iter()
+            .position(|&i| i == real_idx)?;
+        self.selected = pos;
+        Some(pos)
+    }
+
+    /// Toggle a group's collapsed state by cwd (clicked on its header).
+    pub fn toggle_group(&mut self, cwd: &str) {
+        if self.collapsed_groups.contains(cwd) {
+            self.collapsed_groups.remove(cwd);
+        } else {
+            self.collapsed_groups.insert(cwd.to_string());
+        }
+        self.clamp_selection();
     }
 
     /// Distinct session cwds, most-recently-active first (sessions are already

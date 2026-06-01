@@ -20,7 +20,7 @@ use crossterm::{
 };
 use ratatui::{backend::CrosstermBackend, Terminal};
 
-use crate::app::{App, ConfirmAction, LaunchForm, Mode, PendingExec};
+use crate::app::{App, ConfirmAction, LaunchForm, Mode, PendingExec, RowHit};
 use crate::pty::{TermSession, TerminalSpec};
 
 fn parse_args() -> Args {
@@ -325,6 +325,7 @@ fn handle_terminal(app: &mut App, code: KeyCode, mods: KeyModifiers) {
         return;
     }
     if let Some(t) = app.term.as_mut() {
+        t.reset_scrollback();
         t.send_key(code, mods);
     }
 }
@@ -345,20 +346,100 @@ fn handle_mouse(app: &mut App, me: crossterm::event::MouseEvent) {
     match app.mode {
         Mode::Terminal => {
             if over_pane {
-                let col = me.column - px + 1;
-                let row = me.row - py + 1;
-                if let Some(t) = app.term.as_mut() {
-                    t.send_mouse(&me, col, row);
+                // Wheel scrolls our scrollback unless the child tracks the mouse.
+                let tracking = app.term.as_ref().map(|t| t.mouse_tracking()).unwrap_or(false);
+                match me.kind {
+                    K::ScrollUp if !tracking => {
+                        if let Some(t) = app.term.as_mut() {
+                            t.scroll(3);
+                        }
+                    }
+                    K::ScrollDown if !tracking => {
+                        if let Some(t) = app.term.as_mut() {
+                            t.scroll(-3);
+                        }
+                    }
+                    _ => {
+                        let col = me.column - px + 1;
+                        let row = me.row - py + 1;
+                        if let Some(t) = app.term.as_mut() {
+                            t.send_mouse(&me, col, row);
+                        }
+                    }
                 }
+            } else if matches!(me.kind, K::Down(MouseButton::Left)) {
+                // Click outside the pane (on the sidebar) returns focus there,
+                // and selects the clicked row if there is one.
+                app.blur_terminal();
+                click_select(app, me.row);
             }
         }
         Mode::Browse => match me.kind {
             K::ScrollDown => app.move_selection(1),
             K::ScrollUp => app.move_selection(-1),
-            K::Down(MouseButton::Left) if over_pane => app.focus_terminal(),
+            K::Down(MouseButton::Left) => {
+                if over_pane {
+                    app.focus_terminal();
+                } else {
+                    handle_list_click(app, me.row);
+                }
+            }
             _ => {}
         },
         _ => {}
+    }
+}
+
+/// Resolve a click at screen row `y` to a list row. Selects a session (and
+/// opens it on a double-click) or toggles a group header.
+fn handle_list_click(app: &mut App, y: u16) {
+    let hit = app
+        .list_hits
+        .borrow()
+        .iter()
+        .find(|(ry, h, _)| y >= *ry && y < ry.saturating_add(*h))
+        .map(|(_, _, hit)| hit.clone());
+    let Some(hit) = hit else { return };
+    match hit {
+        RowHit::Header(cwd) => {
+            app.last_click = None;
+            app.toggle_group(&cwd);
+        }
+        RowHit::Session(real_idx) => {
+            let Some(pos) = app.select_by_real_index(real_idx) else {
+                return;
+            };
+            // Double-click (same row, <400ms) opens the session.
+            let now = std::time::Instant::now();
+            let double = matches!(app.last_click, Some((p, t))
+                if p == pos && now.duration_since(t) < std::time::Duration::from_millis(400));
+            if double {
+                app.last_click = None;
+                if let Some(s) = app.selected_session() {
+                    let id = s.id.clone();
+                    let cwd = s.cwd.clone();
+                    open_terminal_for(app, PendingExec::Resume { id, cwd });
+                }
+            } else {
+                app.last_click = Some((pos, now));
+            }
+        }
+    }
+}
+
+/// Select (without opening) the session at screen row `y`, if any.
+fn click_select(app: &mut App, y: u16) {
+    let real = app
+        .list_hits
+        .borrow()
+        .iter()
+        .find(|(ry, h, _)| y >= *ry && y < ry.saturating_add(*h))
+        .and_then(|(_, _, hit)| match hit {
+            RowHit::Session(i) => Some(*i),
+            RowHit::Header(_) => None,
+        });
+    if let Some(real_idx) = real {
+        app.select_by_real_index(real_idx);
     }
 }
 

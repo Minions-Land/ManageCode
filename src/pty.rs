@@ -23,6 +23,9 @@ pub struct TermSession {
     child: Box<dyn portable_pty::Child + Send + Sync>,
     rows: u16,
     cols: u16,
+    /// Current scrollback offset in lines (0 = live bottom). Wheel scroll moves
+    /// this when the child isn't tracking the mouse itself.
+    scrollback: usize,
     /// Shown in the pane border.
     pub title: String,
 }
@@ -77,6 +80,7 @@ impl TermSession {
             child,
             rows,
             cols,
+            scrollback: 0,
             title,
         })
     }
@@ -111,6 +115,37 @@ impl TermSession {
     pub fn send_key(&mut self, code: KeyCode, mods: KeyModifiers) {
         if let Some(bytes) = encode_key(code, mods) {
             self.write_bytes(&bytes);
+        }
+    }
+
+    /// Is the child currently tracking the mouse itself? When true, wheel/clicks
+    /// should be forwarded to it; when false, the wheel scrolls our scrollback.
+    pub fn mouse_tracking(&self) -> bool {
+        self.parser
+            .read()
+            .map(|p| !matches!(p.screen().mouse_protocol_mode(), MouseProtocolMode::None))
+            .unwrap_or(false)
+    }
+
+    /// Scroll the vt100 scrollback by `delta` lines (positive = back in history).
+    pub fn scroll(&mut self, delta: isize) {
+        let next = (self.scrollback as isize + delta).clamp(0, SCROLLBACK as isize) as usize;
+        if next == self.scrollback {
+            return;
+        }
+        self.scrollback = next;
+        if let Ok(mut p) = self.parser.write() {
+            p.screen_mut().set_scrollback(next);
+        }
+    }
+
+    /// Jump back to the live bottom of the buffer (called on any keystroke).
+    pub fn reset_scrollback(&mut self) {
+        if self.scrollback != 0 {
+            self.scrollback = 0;
+            if let Ok(mut p) = self.parser.write() {
+                p.screen_mut().set_scrollback(0);
+            }
         }
     }
 
