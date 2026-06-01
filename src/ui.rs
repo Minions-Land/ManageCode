@@ -248,6 +248,13 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App, tier: Layoutness) {
             spans.push(Span::styled("  ·  ", Style::default().fg(MUTED)));
             spans.push(Span::styled("🔕 muted", Style::default().fg(MUTED)));
         }
+        if let Some(tag) = &app.update_available {
+            spans.push(Span::styled("  ·  ", Style::default().fg(MUTED)));
+            spans.push(Span::styled(
+                format!("⬆ {tag} — managecode --update"),
+                Style::default().fg(LIVE).add_modifier(Modifier::BOLD),
+            ));
+        }
         Line::from(spans).alignment(Alignment::Right)
     };
 
