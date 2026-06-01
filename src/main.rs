@@ -7,6 +7,7 @@ mod pty;
 mod scanner;
 mod tmux;
 mod ui;
+mod update;
 mod watcher;
 
 use std::io;
@@ -36,6 +37,12 @@ fn parse_args() -> Args {
             "--list" | "-l" => {
                 a.list_only = true;
             }
+            "--update" | "-u" => {
+                a.update = true;
+            }
+            "--no-update-check" => {
+                a.no_update_check = true;
+            }
             "--help" | "-h" => {
                 print_help();
                 std::process::exit(0);
@@ -54,6 +61,8 @@ fn parse_args() -> Args {
 struct Args {
     history_days: i64,
     list_only: bool,
+    update: bool,
+    no_update_check: bool,
 }
 
 impl Default for Args {
@@ -61,6 +70,8 @@ impl Default for Args {
         Args {
             history_days: 30,
             list_only: false,
+            update: false,
+            no_update_check: false,
         }
     }
 }
@@ -73,10 +84,12 @@ USAGE:
     managecode [OPTIONS]
 
 OPTIONS:
-    -d, --days <N>     History horizon in days (default 30)
-    -l, --list         Print sessions and exit (non-interactive)
-    -h, --help         Show this help
-    -V, --version      Show version
+    -d, --days <N>       History horizon in days (default 30)
+    -l, --list           Print sessions and exit (non-interactive)
+    -u, --update         Update to the latest release and exit
+        --no-update-check  Skip the startup check for a newer release
+    -h, --help           Show this help
+    -V, --version        Show version
 
 KEYS (inside the TUI):
     ↑↓ / jk     navigate

@@ -38,8 +38,11 @@ installs it to `~/.local/bin/managecode`. No Rust toolchain required.
 Tip: if `~/.local/bin` isn't on your `$PATH`, the installer tells you what
 to add to your shell rc.
 
-To update later, just re-run the same command — it always pulls the latest
-release.
+To update later, just run `managecode --update` (or re-run the install
+command) — both pull the latest release via the install script. ManageCode
+also checks for a newer release on startup and shows an `⬆` hint in the
+header when one is available; silence it with `--no-update-check` or
+`MANAGECODE_NO_UPDATE_CHECK=1`.
 
 ## First run
 

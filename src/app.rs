@@ -268,6 +268,9 @@ pub struct App {
     pub settings_field: usize,
     /// Whether we've already alerted that today's spend crossed the budget.
     budget_alerted: bool,
+    /// Newer release tag found by the startup check, if any (e.g. "v0.7.0").
+    pub update_available: Option<String>,
+    update_rx: mpsc::Receiver<String>,
     last_tmux_refresh: Instant,
     last_live_sweep: Instant,
     dirty_since: Option<Instant>,
@@ -293,11 +296,20 @@ pub enum PendingExec {
 }
 
 impl App {
-    pub fn new(history_days: i64) -> Self {
+    pub fn new(history_days: i64, check_updates: bool) -> Self {
         let (tx, rx) = mpsc::channel();
         let (ai_tx, ai_rx) = mpsc::channel();
         let (watch_tx, watch_rx) = mpsc::channel();
         let watcher_active = watcher::spawn(watch_tx);
+        // Background check for a newer release; result arrives via update_rx.
+        let (update_tx, update_rx) = mpsc::channel();
+        if check_updates {
+            thread::spawn(move || {
+                if let Some(tag) = crate::update::latest_if_newer() {
+                    let _ = update_tx.send(tag);
+                }
+            });
+        }
         let mut app = App {
             sessions: Vec::new(),
             selected: 0,
@@ -329,6 +341,8 @@ impl App {
             settings_budget_input: String::new(),
             settings_field: 0,
             budget_alerted: false,
+            update_available: None,
+            update_rx,
             last_tmux_refresh: Instant::now() - Duration::from_secs(60),
             last_live_sweep: Instant::now() - Duration::from_secs(60),
             dirty_since: None,
@@ -367,6 +381,12 @@ impl App {
         // Drain AI events that arrived.
         while let Ok(ev) = self.ai_rx.try_recv() {
             self.handle_ai_event(ev);
+        }
+        // Pick up the background update-check result (fires at most once).
+        if self.update_available.is_none() {
+            if let Ok(tag) = self.update_rx.try_recv() {
+                self.update_available = Some(tag);
+            }
         }
         // Drain file-watcher events — coalesce into a single dirty flag.
         let mut got_event = false;
