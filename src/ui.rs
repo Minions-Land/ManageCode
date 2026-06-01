@@ -20,6 +20,7 @@ const TEXT: Color = Color::Rgb(0xE8, 0xE5, 0xDA);
 const MUTED: Color = Color::Rgb(0x77, 0x74, 0x6A);
 const LIVE: Color = Color::Rgb(0x68, 0xD3, 0x91);
 const WARN: Color = Color::Rgb(0xE0, 0x8C, 0x4F);
+const RED: Color = Color::Rgb(0xE0, 0x5A, 0x4F);
 
 const SPINNER: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
@@ -223,6 +224,25 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App, tier: Layoutness) {
             format!("${:.2}", total),
             Style::default().fg(GOLD).add_modifier(Modifier::BOLD),
         ));
+        // Today's spend, tinted by how close it is to the daily budget.
+        let today = app.today_cost();
+        if today > 0.0 || app.config.daily_budget_usd.is_some() {
+            spans.push(Span::styled("  ·  ", Style::default().fg(MUTED)));
+            let (txt, color) = match app.config.daily_budget_usd {
+                Some(limit) if limit > 0.0 => {
+                    let c = if today >= limit {
+                        RED
+                    } else if today >= limit * 0.8 {
+                        WARN
+                    } else {
+                        LIVE
+                    };
+                    (format!("today ${:.2}/{:.0}", today, limit), c)
+                }
+                _ => (format!("today ${:.2}", today), LIVE),
+            };
+            spans.push(Span::styled(txt, Style::default().fg(color).add_modifier(Modifier::BOLD)));
+        }
         if !app.notifier.enabled {
             spans.push(Span::styled("  ·  ", Style::default().fg(MUTED)));
             spans.push(Span::styled("🔕 muted", Style::default().fg(MUTED)));
@@ -953,36 +973,68 @@ fn draw_rename_overlay(f: &mut Frame, area: Rect, app: &App) {
 }
 
 fn draw_settings_overlay(f: &mut Frame, area: Rect, app: &App) {
-    let modal = centered(area, 64, 11);
+    let modal = centered(area, 64, 14);
     f.render_widget(Clear, modal);
     let block = panel_block("Settings", true);
     let inner = block.inner(modal);
     f.render_widget(block, modal);
+
+    let mark = |i: usize| -> Span<'static> {
+        if app.settings_field == i {
+            Span::styled("▸ ", Style::default().fg(GOLD))
+        } else {
+            Span::raw("  ")
+        }
+    };
+    let cursor = |i: usize| -> Span<'static> {
+        if app.settings_field == i {
+            Span::styled("▏", Style::default().fg(GOLD).slow_blink())
+        } else {
+            Span::raw("")
+        }
+    };
+    let budget_shown = if app.settings_budget_input.is_empty() {
+        "off".to_string()
+    } else {
+        app.settings_budget_input.clone()
+    };
 
     let lines = vec![
         Line::from(Span::styled(
             "terminal escape prefix",
             Style::default().fg(GOLD).add_modifier(Modifier::BOLD),
         )),
+        Line::from(vec![
+            mark(0),
+            Span::styled("key  ", Style::default().fg(MUTED)),
+            Span::styled(app.settings_input.clone(), Style::default().fg(TEXT)),
+            cursor(0),
+        ]),
         Line::from(Span::styled(
-            "key that returns focus from the terminal back to the list",
+            "    e.g. ctrl-a  ctrl-b  f12  ctrl-space",
             Style::default().fg(MUTED),
         )),
         Line::raw(""),
-        Line::from(vec![
-            Span::styled("key › ", Style::default().fg(GOLD)),
-            Span::styled(app.settings_input.clone(), Style::default().fg(TEXT)),
-            Span::styled("▏", Style::default().fg(GOLD).slow_blink()),
-        ]),
-        Line::raw(""),
         Line::from(Span::styled(
-            "examples:  ctrl-a   ctrl-b   f12   ctrl-space",
+            "daily budget (USD)",
+            Style::default().fg(GOLD).add_modifier(Modifier::BOLD),
+        )),
+        Line::from(vec![
+            mark(1),
+            Span::styled("$    ", Style::default().fg(MUTED)),
+            Span::styled(budget_shown, Style::default().fg(TEXT)),
+            cursor(1),
+        ]),
+        Line::from(Span::styled(
+            "    alert when today's spend crosses it; blank = off",
             Style::default().fg(MUTED),
         )),
         Line::raw(""),
         Line::from(vec![
             Span::styled("⏎", Style::default().fg(GOLD).add_modifier(Modifier::BOLD)),
             Span::styled(" save   ", Style::default().fg(MUTED)),
+            Span::styled("↑↓/tab", Style::default().fg(GOLD).add_modifier(Modifier::BOLD)),
+            Span::styled(" field   ", Style::default().fg(MUTED)),
             Span::styled("esc", Style::default().fg(GOLD).add_modifier(Modifier::BOLD)),
             Span::styled(" cancel", Style::default().fg(MUTED)),
         ]),

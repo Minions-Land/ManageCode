@@ -599,29 +599,72 @@ fn handle_settings(app: &mut App, code: KeyCode) {
     match code {
         KeyCode::Esc => {
             app.settings_input.clear();
+            app.settings_budget_input.clear();
             app.mode = Mode::Browse;
         }
-        KeyCode::Enter => match config::KeySpec::parse(&app.settings_input) {
-            Ok(spec) if spec.is_reserved() => {
-                app.flash("that key is reserved (Ctrl-C / Ctrl-D)");
+        KeyCode::Up => {
+            if app.settings_field > 0 {
+                app.settings_field -= 1;
             }
-            Ok(spec) => {
-                app.config.escape_prefix = spec;
-                match config::save(&app.config) {
-                    Ok(()) => app.flash("prefix saved"),
-                    Err(e) => app.flash(format!("save failed: {e}")),
+        }
+        KeyCode::Down | KeyCode::Tab => {
+            app.settings_field = (app.settings_field + 1) % 2;
+        }
+        KeyCode::Enter => {
+            // Validate the prefix.
+            let spec = match config::KeySpec::parse(&app.settings_input) {
+                Ok(s) if s.is_reserved() => {
+                    app.flash("that key is reserved (Ctrl-C / Ctrl-D)");
+                    return;
                 }
-                app.settings_input.clear();
-                app.mode = Mode::Browse;
+                Ok(s) => s,
+                Err(e) => {
+                    app.flash(format!("invalid key: {e}"));
+                    return;
+                }
+            };
+            // Validate the daily budget (empty = off).
+            let budget = {
+                let t = app.settings_budget_input.trim();
+                if t.is_empty() {
+                    None
+                } else {
+                    match t.parse::<f64>() {
+                        Ok(v) if v > 0.0 => Some(v),
+                        Ok(_) => None,
+                        Err(_) => {
+                            app.flash("invalid budget (use a number like 25)");
+                            return;
+                        }
+                    }
+                }
+            };
+            app.config.escape_prefix = spec;
+            app.config.daily_budget_usd = budget;
+            match config::save(&app.config) {
+                Ok(()) => app.flash("settings saved"),
+                Err(e) => app.flash(format!("save failed: {e}")),
             }
-            Err(e) => app.flash(format!("invalid key: {e}")),
-        },
+            app.settings_input.clear();
+            app.settings_budget_input.clear();
+            app.mode = Mode::Browse;
+        }
         KeyCode::Backspace => {
-            app.settings_input.pop();
+            if app.settings_field == 0 {
+                app.settings_input.pop();
+            } else {
+                app.settings_budget_input.pop();
+            }
         }
         KeyCode::Char(c) => {
-            if app.settings_input.chars().count() < 24 {
-                app.settings_input.push(c);
+            if app.settings_field == 0 {
+                if app.settings_input.chars().count() < 24 {
+                    app.settings_input.push(c);
+                }
+            } else if (c.is_ascii_digit() || c == '.')
+                && app.settings_budget_input.chars().count() < 12
+            {
+                app.settings_budget_input.push(c);
             }
         }
         _ => {}

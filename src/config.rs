@@ -14,12 +14,16 @@ pub struct Config {
     /// Key that, while the terminal pane is focused, returns focus to the
     /// sidebar (does not kill the session).
     pub escape_prefix: KeySpec,
+    /// Daily spend ceiling in USD; alert when today's cost reaches it. None = off.
+    #[serde(default)]
+    pub daily_budget_usd: Option<f64>,
 }
 
 impl Default for Config {
     fn default() -> Self {
         Config {
             escape_prefix: KeySpec::ctrl_a(),
+            daily_budget_usd: None,
         }
     }
 }

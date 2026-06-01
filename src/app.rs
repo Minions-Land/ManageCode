@@ -245,6 +245,12 @@ pub struct App {
     pub config: Config,
     /// Editing buffer for the settings overlay.
     pub settings_input: String,
+    /// Budget editing buffer for the settings overlay (USD, "" = off).
+    pub settings_budget_input: String,
+    /// Which settings field is focused (0 = prefix, 1 = daily budget).
+    pub settings_field: usize,
+    /// Whether we've already alerted that today's spend crossed the budget.
+    budget_alerted: bool,
     last_tmux_refresh: Instant,
     last_live_sweep: Instant,
     dirty_since: Option<Instant>,
@@ -301,6 +307,9 @@ impl App {
             term_area: Cell::new((0, 0, 80, 24)),
             config: crate::config::load(),
             settings_input: String::new(),
+            settings_budget_input: String::new(),
+            settings_field: 0,
+            budget_alerted: false,
             last_tmux_refresh: Instant::now() - Duration::from_secs(60),
             last_live_sweep: Instant::now() - Duration::from_secs(60),
             dirty_since: None,
@@ -376,6 +385,7 @@ impl App {
         if self.last_scan.elapsed() >= fallback && !self.scanning {
             self.kick_scan();
         }
+        self.check_budget();
         if let Some((_, when)) = self.message {
             if when.elapsed() > Duration::from_secs(3) {
                 self.message = None;
@@ -727,6 +737,12 @@ impl App {
     /// Open the settings overlay, seeding the editor with the current prefix.
     pub fn open_settings(&mut self) {
         self.settings_input = self.config.escape_prefix.label();
+        self.settings_budget_input = self
+            .config
+            .daily_budget_usd
+            .map(|v| format!("{v}"))
+            .unwrap_or_default();
+        self.settings_field = 0;
         self.mode = Mode::Settings;
     }
 
@@ -736,6 +752,33 @@ impl App {
 
     pub fn total_cost(&self) -> f64 {
         self.sessions.iter().map(|s| s.cost).sum()
+    }
+
+    /// Total spend across all sessions for today (local calendar day).
+    pub fn today_cost(&self) -> f64 {
+        self.sessions.iter().map(|s| s.cost_today()).sum()
+    }
+
+    /// Fire a one-shot desktop alert when today's spend crosses the budget.
+    fn check_budget(&mut self) {
+        let Some(limit) = self.config.daily_budget_usd else {
+            return;
+        };
+        if limit <= 0.0 {
+            return;
+        }
+        if self.today_cost() >= limit {
+            if !self.budget_alerted {
+                self.notifier.notify_text(&format!(
+                    "daily spend ${:.2} reached your budget ${:.2}",
+                    self.today_cost(),
+                    limit
+                ));
+                self.budget_alerted = true;
+            }
+        } else {
+            self.budget_alerted = false;
+        }
     }
 
     pub fn active_count(&self) -> usize {
