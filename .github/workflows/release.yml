@@ -28,7 +28,7 @@ jobs:
             asset: macos-aarch64
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -56,10 +56,16 @@ jobs:
           echo "ARCHIVE=$ARCHIVE" >> "$GITHUB_ENV"
 
       - name: Upload to release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ github.ref_name || inputs.tag }}
-          files: |
-            ${{ env.ARCHIVE }}
-            ${{ env.ARCHIVE }}.sha256
-          fail_on_unmatched_files: true
+        # Use the runner's built-in gh CLI instead of a JS action, so the
+        # workflow has no Node-based dependencies.
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name || inputs.tag }}
+        run: |
+          set -euo pipefail
+          # Ensure a release exists for this tag (create on first upload, e.g.
+          # for a manual workflow_dispatch run); ignore if it already exists.
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            gh release create "$TAG" --title "$TAG" --generate-notes
+          fi
+          gh release upload "$TAG" "$ARCHIVE" "$ARCHIVE.sha256" --clobber
