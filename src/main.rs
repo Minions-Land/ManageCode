@@ -106,11 +106,17 @@ KEYS (inside the TUI):
 
 fn main() -> Result<()> {
     let args = parse_args();
+    if args.update {
+        let status = update::run_update()?;
+        std::process::exit(status.code().unwrap_or(1));
+    }
     if args.list_only {
         return run_list(args.history_days);
     }
     install_panic_hook();
-    let mut app = App::new(args.history_days);
+    // Check for a newer release in the background unless opted out.
+    let check_updates = !args.no_update_check && !update::check_disabled();
+    let mut app = App::new(args.history_days, check_updates);
 
     loop {
         enter_tui()?;
