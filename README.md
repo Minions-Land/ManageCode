@@ -94,7 +94,13 @@ pane closes back to the dashboard.
   purple = thinking, teal `▶` = running in the background. Updates show
   up in well under a second.
 - **Cost at a glance.** Per-session token usage and dollar cost, plus a
-  daily total in the header.
+  daily total in the header. Set a daily budget (`:`) to get an alert and a
+  red header when today's spend crosses it; press `c` for a cost summary
+  broken down by directory, model, and day.
+- **Mouse-friendly.** Click a row to select it, double-click to open it,
+  click a group header to fold it, and scroll the wheel to navigate. Inside
+  the terminal pane the wheel scrolls scrollback, and clicks/drags pass
+  through to `claude` or tmux when they ask for them.
 - **Group by directory.** Working on multiple repos? Each row is grouped
   under its `cwd`; collapse the ones you don't care about with `space`.
 - **AI search.** `/` is a normal substring filter; if nothing matches,
