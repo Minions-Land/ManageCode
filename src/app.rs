@@ -37,6 +37,8 @@ pub enum Mode {
     Terminal,
     /// The settings overlay is open.
     Settings,
+    /// The cost-summary overlay is open.
+    CostSummary,
 }
 
 #[derive(Clone)]
@@ -49,6 +51,10 @@ pub struct LaunchForm {
     pub sandbox: bool,
     pub verbose: bool,
     pub add_dir: String,
+    /// Distinct recent cwds for quick selection on the cwd field.
+    pub recent_dirs: Vec<String>,
+    /// Index into recent_dirs for Left/Right cycling.
+    pub dir_idx: usize,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -87,7 +93,7 @@ impl LaunchModel {
 }
 
 impl LaunchForm {
-    pub fn new(cwd: String, resume_id: Option<String>) -> Self {
+    pub fn new(cwd: String, resume_id: Option<String>, recent_dirs: Vec<String>) -> Self {
         LaunchForm {
             cwd,
             resume_id,
@@ -97,29 +103,47 @@ impl LaunchForm {
             sandbox: false,
             verbose: false,
             add_dir: String::new(),
+            recent_dirs,
+            dir_idx: 0,
         }
     }
 
-    pub const FIELD_COUNT: usize = 5;
+    pub const FIELD_COUNT: usize = 6;
+
+    /// Cycle the cwd through the recent-dirs list (Left/Right on the cwd field).
+    pub fn cycle_dir(&mut self, forward: bool) {
+        if self.recent_dirs.is_empty() {
+            return;
+        }
+        let n = self.recent_dirs.len();
+        self.dir_idx = if forward {
+            (self.dir_idx + 1) % n
+        } else {
+            (self.dir_idx + n - 1) % n
+        };
+        self.cwd = self.recent_dirs[self.dir_idx].clone();
+    }
 
     pub fn field_label(&self, i: usize) -> &'static str {
         match i {
-            0 => "model",
-            1 => "--dangerously-skip-permissions",
-            2 => "--sandbox",
-            3 => "--verbose",
-            4 => "--add-dir",
+            0 => "cwd",
+            1 => "model",
+            2 => "--dangerously-skip-permissions",
+            3 => "--sandbox",
+            4 => "--verbose",
+            5 => "--add-dir",
             _ => "",
         }
     }
 
     pub fn field_value(&self, i: usize) -> String {
         match i {
-            0 => self.model.label().to_string(),
-            1 => bool_label(self.dangerously_skip_permissions),
-            2 => bool_label(self.sandbox),
-            3 => bool_label(self.verbose),
-            4 => {
+            0 => crate::models::short_path(&self.cwd),
+            1 => self.model.label().to_string(),
+            2 => bool_label(self.dangerously_skip_permissions),
+            3 => bool_label(self.sandbox),
+            4 => bool_label(self.verbose),
+            5 => {
                 if self.add_dir.is_empty() {
                     "—".into()
                 } else {
@@ -132,10 +156,10 @@ impl LaunchForm {
 
     pub fn toggle_field(&mut self) {
         match self.field {
-            0 => self.model = self.model.cycle(),
-            1 => self.dangerously_skip_permissions = !self.dangerously_skip_permissions,
-            2 => self.sandbox = !self.sandbox,
-            3 => self.verbose = !self.verbose,
+            1 => self.model = self.model.cycle(),
+            2 => self.dangerously_skip_permissions = !self.dangerously_skip_permissions,
+            3 => self.sandbox = !self.sandbox,
+            4 => self.verbose = !self.verbose,
             _ => {}
         }
     }
@@ -223,6 +247,12 @@ pub struct App {
     pub config: Config,
     /// Editing buffer for the settings overlay.
     pub settings_input: String,
+    /// Budget editing buffer for the settings overlay (USD, "" = off).
+    pub settings_budget_input: String,
+    /// Which settings field is focused (0 = prefix, 1 = daily budget).
+    pub settings_field: usize,
+    /// Whether we've already alerted that today's spend crossed the budget.
+    budget_alerted: bool,
     last_tmux_refresh: Instant,
     last_live_sweep: Instant,
     dirty_since: Option<Instant>,
@@ -279,6 +309,9 @@ impl App {
             term_area: Cell::new((0, 0, 80, 24)),
             config: crate::config::load(),
             settings_input: String::new(),
+            settings_budget_input: String::new(),
+            settings_field: 0,
+            budget_alerted: false,
             last_tmux_refresh: Instant::now() - Duration::from_secs(60),
             last_live_sweep: Instant::now() - Duration::from_secs(60),
             dirty_since: None,
@@ -354,6 +387,7 @@ impl App {
         if self.last_scan.elapsed() >= fallback && !self.scanning {
             self.kick_scan();
         }
+        self.check_budget();
         if let Some((_, when)) = self.message {
             if when.elapsed() > Duration::from_secs(3) {
                 self.message = None;
@@ -689,9 +723,28 @@ impl App {
         self.term.is_some() || self.pending_terminal.is_some()
     }
 
+    /// Distinct session cwds, most-recently-active first (sessions are already
+    /// sorted by recency), for quick selection in the launch form.
+    pub fn recent_dirs(&self) -> Vec<String> {
+        let mut seen = HashSet::new();
+        let mut out = Vec::new();
+        for s in &self.sessions {
+            if !s.cwd.is_empty() && seen.insert(s.cwd.clone()) {
+                out.push(s.cwd.clone());
+            }
+        }
+        out
+    }
+
     /// Open the settings overlay, seeding the editor with the current prefix.
     pub fn open_settings(&mut self) {
         self.settings_input = self.config.escape_prefix.label();
+        self.settings_budget_input = self
+            .config
+            .daily_budget_usd
+            .map(|v| format!("{v}"))
+            .unwrap_or_default();
+        self.settings_field = 0;
         self.mode = Mode::Settings;
     }
 
@@ -701,6 +754,33 @@ impl App {
 
     pub fn total_cost(&self) -> f64 {
         self.sessions.iter().map(|s| s.cost).sum()
+    }
+
+    /// Total spend across all sessions for today (local calendar day).
+    pub fn today_cost(&self) -> f64 {
+        self.sessions.iter().map(|s| s.cost_today()).sum()
+    }
+
+    /// Fire a one-shot desktop alert when today's spend crosses the budget.
+    fn check_budget(&mut self) {
+        let Some(limit) = self.config.daily_budget_usd else {
+            return;
+        };
+        if limit <= 0.0 {
+            return;
+        }
+        if self.today_cost() >= limit {
+            if !self.budget_alerted {
+                self.notifier.notify_text(&format!(
+                    "daily spend ${:.2} reached your budget ${:.2}",
+                    self.today_cost(),
+                    limit
+                ));
+                self.budget_alerted = true;
+            }
+        } else {
+            self.budget_alerted = false;
+        }
     }
 
     pub fn active_count(&self) -> usize {

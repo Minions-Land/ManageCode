@@ -302,6 +302,15 @@ fn handle_key(
             handle_settings(app, code);
             None
         }
+        Mode::CostSummary => {
+            if matches!(
+                code,
+                KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('c') | KeyCode::Char('$')
+            ) {
+                app.mode = Mode::Browse;
+            }
+            None
+        }
         // Reached only via the early return above; arm kept for exhaustiveness.
         Mode::Terminal => None,
     }
@@ -371,10 +380,16 @@ fn handle_launch(app: &mut App, code: KeyCode) -> Option<ExitRequest> {
         KeyCode::Down | KeyCode::Tab => {
             form.field = (form.field + 1) % LaunchForm::FIELD_COUNT;
         }
-        KeyCode::Char(' ') if form.field != 4 => form.toggle_field(),
-        KeyCode::Left | KeyCode::Right if form.field == 0 => form.toggle_field(),
-        KeyCode::Char(c) if form.field == 4 => form.add_dir.push(c),
-        KeyCode::Backspace if form.field == 4 => {
+        KeyCode::Char(' ') if matches!(form.field, 1 | 2 | 3 | 4) => form.toggle_field(),
+        KeyCode::Left if form.field == 0 => form.cycle_dir(false),
+        KeyCode::Right if form.field == 0 => form.cycle_dir(true),
+        KeyCode::Left | KeyCode::Right if form.field == 1 => form.toggle_field(),
+        KeyCode::Char(c) if form.field == 0 => form.cwd.push(c),
+        KeyCode::Backspace if form.field == 0 => {
+            form.cwd.pop();
+        }
+        KeyCode::Char(c) if form.field == 5 => form.add_dir.push(c),
+        KeyCode::Backspace if form.field == 5 => {
             form.add_dir.pop();
         }
         KeyCode::Enter => {
@@ -429,7 +444,8 @@ fn handle_browse(
                         .map(|h| h.to_string_lossy().to_string())
                         .unwrap_or_default()
                 });
-            app.mode = Mode::Launch(LaunchForm::new(cwd, None));
+            let dirs = app.recent_dirs();
+            app.mode = Mode::Launch(LaunchForm::new(cwd, None, dirs));
         }
         KeyCode::Char('s') => {
             if let Some(s) = app.selected_session() {
@@ -491,6 +507,9 @@ fn handle_browse(
         }
         KeyCode::Char(':') => {
             app.open_settings();
+        }
+        KeyCode::Char('c') => {
+            app.mode = Mode::CostSummary;
         }
         KeyCode::Char('\\') => {
             // Prompt-less AI search: use current filter buffer as the query.
@@ -592,29 +611,72 @@ fn handle_settings(app: &mut App, code: KeyCode) {
     match code {
         KeyCode::Esc => {
             app.settings_input.clear();
+            app.settings_budget_input.clear();
             app.mode = Mode::Browse;
         }
-        KeyCode::Enter => match config::KeySpec::parse(&app.settings_input) {
-            Ok(spec) if spec.is_reserved() => {
-                app.flash("that key is reserved (Ctrl-C / Ctrl-D)");
+        KeyCode::Up => {
+            if app.settings_field > 0 {
+                app.settings_field -= 1;
             }
-            Ok(spec) => {
-                app.config.escape_prefix = spec;
-                match config::save(&app.config) {
-                    Ok(()) => app.flash("prefix saved"),
-                    Err(e) => app.flash(format!("save failed: {e}")),
+        }
+        KeyCode::Down | KeyCode::Tab => {
+            app.settings_field = (app.settings_field + 1) % 2;
+        }
+        KeyCode::Enter => {
+            // Validate the prefix.
+            let spec = match config::KeySpec::parse(&app.settings_input) {
+                Ok(s) if s.is_reserved() => {
+                    app.flash("that key is reserved (Ctrl-C / Ctrl-D)");
+                    return;
                 }
-                app.settings_input.clear();
-                app.mode = Mode::Browse;
+                Ok(s) => s,
+                Err(e) => {
+                    app.flash(format!("invalid key: {e}"));
+                    return;
+                }
+            };
+            // Validate the daily budget (empty = off).
+            let budget = {
+                let t = app.settings_budget_input.trim();
+                if t.is_empty() {
+                    None
+                } else {
+                    match t.parse::<f64>() {
+                        Ok(v) if v > 0.0 => Some(v),
+                        Ok(_) => None,
+                        Err(_) => {
+                            app.flash("invalid budget (use a number like 25)");
+                            return;
+                        }
+                    }
+                }
+            };
+            app.config.escape_prefix = spec;
+            app.config.daily_budget_usd = budget;
+            match config::save(&app.config) {
+                Ok(()) => app.flash("settings saved"),
+                Err(e) => app.flash(format!("save failed: {e}")),
             }
-            Err(e) => app.flash(format!("invalid key: {e}")),
-        },
+            app.settings_input.clear();
+            app.settings_budget_input.clear();
+            app.mode = Mode::Browse;
+        }
         KeyCode::Backspace => {
-            app.settings_input.pop();
+            if app.settings_field == 0 {
+                app.settings_input.pop();
+            } else {
+                app.settings_budget_input.pop();
+            }
         }
         KeyCode::Char(c) => {
-            if app.settings_input.chars().count() < 24 {
-                app.settings_input.push(c);
+            if app.settings_field == 0 {
+                if app.settings_input.chars().count() < 24 {
+                    app.settings_input.push(c);
+                }
+            } else if (c.is_ascii_digit() || c == '.')
+                && app.settings_budget_input.chars().count() < 12
+            {
+                app.settings_budget_input.push(c);
             }
         }
         _ => {}

@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use chrono::{DateTime, Local};
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -33,6 +35,8 @@ pub struct SessionInfo {
     pub model: Option<String>,
     pub usage: TokenUsage,
     pub cost: f64,
+    /// Cost accrued per local calendar day ("YYYY-MM-DD" -> USD).
+    pub cost_by_day: HashMap<String, f64>,
     pub is_alive: bool,
 }
 
@@ -46,6 +50,17 @@ impl SessionInfo {
             None => false,
         }
     }
+
+    /// Cost this session accrued today (local calendar day).
+    pub fn cost_today(&self) -> f64 {
+        let today = Local::now().format("%Y-%m-%d").to_string();
+        self.cost_by_day.get(&today).copied().unwrap_or(0.0)
+    }
+}
+
+/// Local calendar-day key, e.g. "2026-05-31".
+pub fn day_key(t: &DateTime<Local>) -> String {
+    t.format("%Y-%m-%d").to_string()
 }
 
 /// Public Anthropic pricing per million tokens.

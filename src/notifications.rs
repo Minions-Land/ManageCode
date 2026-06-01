@@ -55,7 +55,7 @@ impl Notifier {
                     .unwrap_or(true);
 
                 if busy_for >= MIN_BUSY && cooldown_ok {
-                    fire(&s.name);
+                    fire("Claude finished", &s.name);
                     self.last_fire.insert(s.id.clone(), now);
                 }
                 self.busy_start.remove(&s.id);
@@ -71,18 +71,27 @@ impl Notifier {
         self.busy_start.retain(|k, _| alive.contains(k.as_str()));
         self.last_fire.retain(|k, _| alive.contains(k.as_str()));
     }
+
+    /// Send an arbitrary desktop notification (respects the mute toggle).
+    pub fn notify_text(&self, body: &str) {
+        if !self.enabled {
+            return;
+        }
+        fire("ManageCode", body);
+    }
 }
 
 #[cfg(target_os = "macos")]
-fn fire(name: &str) {
+fn fire(title: &str, body: &str) {
     // Ring terminal bell + native banner via osascript.
     print!("\x07");
-    let safe = name.replace('"', "'");
+    let safe_body = body.replace('"', "'");
+    let safe_title = title.replace('"', "'");
     let _ = Command::new("osascript")
         .arg("-e")
         .arg(format!(
-            "display notification \"{}\" with title \"Claude finished\"",
-            safe
+            "display notification \"{}\" with title \"{}\"",
+            safe_body, safe_title
         ))
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -90,7 +99,7 @@ fn fire(name: &str) {
 }
 
 #[cfg(target_os = "linux")]
-fn fire(name: &str) {
+fn fire(title: &str, body: &str) {
     // Ring terminal bell + try notify-send.
     print!("\x07");
     use std::io::Write;
@@ -98,14 +107,14 @@ fn fire(name: &str) {
     let _ = Command::new("notify-send")
         .arg("--app-name=ManageCode")
         .arg("--icon=utilities-terminal")
-        .arg("Claude finished")
-        .arg(name)
+        .arg(title)
+        .arg(body)
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status();
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-fn fire(_name: &str) {
+fn fire(_title: &str, _body: &str) {
     print!("\x07");
 }

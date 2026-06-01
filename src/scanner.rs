@@ -16,6 +16,7 @@ struct JsonlCache {
     model: Option<String>,
     ai_title: Option<String>,
     cwd: Option<String>,
+    cost_by_day: HashMap<String, f64>,
 }
 
 static CACHE: Mutex<Option<HashMap<String, JsonlCache>>> = Mutex::new(None);
@@ -106,7 +107,7 @@ fn datetime_of(t: SystemTime) -> DateTime<Local> {
 
 fn parse_usage_with_meta(
     jsonl_path: &Path,
-) -> (TokenUsage, Option<String>, Option<String>, Option<DateTime<Local>>, Option<String>) {
+) -> (TokenUsage, Option<String>, Option<String>, Option<DateTime<Local>>, Option<String>, HashMap<String, f64>) {
     let session_id = jsonl_path
         .file_stem()
         .and_then(|s| s.to_str())
@@ -115,7 +116,7 @@ fn parse_usage_with_meta(
 
     let attrs = match fs::metadata(jsonl_path) {
         Ok(a) => a,
-        Err(_) => return (TokenUsage::default(), None, None, None, None),
+        Err(_) => return (TokenUsage::default(), None, None, None, None, HashMap::new()),
     };
     let size = attrs.len();
     let mtime = attrs.modified().ok();
@@ -131,19 +132,27 @@ fn parse_usage_with_meta(
 
     if let Some(cached) = cache_get(&session_id) {
         if cached.fingerprint == fingerprint {
-            return (cached.usage, cached.model, cached.ai_title, mtime_dt, cached.cwd);
+            return (
+                cached.usage,
+                cached.model,
+                cached.ai_title,
+                mtime_dt,
+                cached.cwd,
+                cached.cost_by_day,
+            );
         }
     }
 
     let content = match fs::read_to_string(jsonl_path) {
         Ok(c) => c,
-        Err(_) => return (TokenUsage::default(), None, None, mtime_dt, None),
+        Err(_) => return (TokenUsage::default(), None, None, mtime_dt, None, HashMap::new()),
     };
 
     let mut usage = TokenUsage::default();
     let mut model: Option<String> = None;
     let mut ai_title: Option<String> = None;
     let mut cwd: Option<String> = None;
+    let mut cost_by_day: HashMap<String, f64> = HashMap::new();
 
     for line in content.lines() {
         if line.is_empty() {
@@ -175,21 +184,42 @@ fn parse_usage_with_meta(
             Some(u) => u,
             None => continue,
         };
-        usage.total_input += u.get("input_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
-        usage.total_output += u.get("output_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
-        usage.cache_read += u
+        let in_t = u.get("input_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+        let out_t = u.get("output_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+        let cr_t = u
             .get("cache_read_input_tokens")
             .and_then(|v| v.as_u64())
             .unwrap_or(0);
-        usage.cache_creation += u
+        let cc_t = u
             .get("cache_creation_input_tokens")
             .and_then(|v| v.as_u64())
             .unwrap_or(0);
+        usage.total_input += in_t;
+        usage.total_output += out_t;
+        usage.cache_read += cr_t;
+        usage.cache_creation += cc_t;
         if obj.get("isSidechain").and_then(|v| v.as_bool()) != Some(true) {
             usage.message_count += 1;
         }
-        if let Some(m) = msg.get("model").and_then(|v| v.as_str()) {
-            model = Some(m.to_string());
+        let msg_model = msg.get("model").and_then(|v| v.as_str()).map(String::from);
+        if let Some(m) = &msg_model {
+            model = Some(m.clone());
+        }
+
+        // Bucket this message's cost by the day it was sent (local time).
+        let (pi, po, pcr, pcw) =
+            crate::models::pricing_for(msg_model.as_deref().or(model.as_deref()));
+        let msg_cost = (in_t as f64) / 1_000_000.0 * pi
+            + (out_t as f64) / 1_000_000.0 * po
+            + (cr_t as f64) / 1_000_000.0 * pcr
+            + (cc_t as f64) / 1_000_000.0 * pcw;
+        if let Some(day) = obj
+            .get("timestamp")
+            .and_then(|v| v.as_str())
+            .and_then(|ts| DateTime::parse_from_rfc3339(ts).ok())
+            .map(|dt| crate::models::day_key(&dt.with_timezone(&Local)))
+        {
+            *cost_by_day.entry(day).or_insert(0.0) += msg_cost;
         }
     }
 
@@ -201,10 +231,11 @@ fn parse_usage_with_meta(
             model: model.clone(),
             ai_title: ai_title.clone(),
             cwd: cwd.clone(),
+            cost_by_day: cost_by_day.clone(),
         },
     );
 
-    (usage, model, ai_title, mtime_dt, cwd)
+    (usage, model, ai_title, mtime_dt, cwd, cost_by_day)
 }
 
 /// Two-phase result: Phase 1 (live + recent) followed by Phase 2 (full history).
@@ -277,10 +308,10 @@ pub fn scan(history_days: i64) -> Vec<SessionInfo> {
             // Backfill usage from the project's JSONL if it exists.
             let project_dir = claude.join("projects").join(project_name_for(&cwd));
             let jsonl_path = project_dir.join(format!("{}.jsonl", session_id));
-            let (usage, model, ai_title, _, _) = if jsonl_path.exists() {
+            let (usage, model, ai_title, _, _, cost_by_day) = if jsonl_path.exists() {
                 parse_usage_with_meta(&jsonl_path)
             } else {
-                (TokenUsage::default(), None, None, None, None)
+                (TokenUsage::default(), None, None, None, None, HashMap::new())
             };
 
             let cost = cost_for(&usage, model.as_deref());
@@ -305,6 +336,7 @@ pub fn scan(history_days: i64) -> Vec<SessionInfo> {
                     model,
                     usage,
                     cost,
+                    cost_by_day,
                     is_alive: true,
                 },
             );
@@ -359,7 +391,8 @@ pub fn scan(history_days: i64) -> Vec<SessionInfo> {
                 if seen.contains(&session_id) {
                     continue;
                 }
-                let (usage, model, ai_title, last_mod, cwd_from_jsonl) = parse_usage_with_meta(&path);
+                let (usage, model, ai_title, last_mod, cwd_from_jsonl, cost_by_day) =
+                    parse_usage_with_meta(&path);
                 let cwd = cwd_from_jsonl.unwrap_or(cwd_guess.clone());
                 if is_junk_cwd(&cwd) {
                     continue;
@@ -385,6 +418,7 @@ pub fn scan(history_days: i64) -> Vec<SessionInfo> {
                         model,
                         usage,
                         cost,
+                        cost_by_day,
                         is_alive: false,
                     },
                 );
