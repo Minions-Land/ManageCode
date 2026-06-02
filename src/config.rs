@@ -17,6 +17,19 @@ pub struct Config {
     /// Daily spend ceiling in USD; alert when today's cost reaches it. None = off.
     #[serde(default)]
     pub daily_budget_usd: Option<f64>,
+    /// Run launches inside a detached tmux session (when tmux is available) so
+    /// they persist across detach/quit and you can switch back and forth all
+    /// day. Set false to always run directly in the embedded PTY.
+    #[serde(default = "default_true")]
+    pub prefer_tmux: bool,
+    /// On quit, kill all `mc-*` tmux sessions this tool created. Keeps the tmux
+    /// server tidy; set false to leave them running in the background.
+    #[serde(default = "default_true")]
+    pub cleanup_tmux_on_exit: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 impl Default for Config {
@@ -24,6 +37,8 @@ impl Default for Config {
         Config {
             escape_prefix: KeySpec::ctrl_a(),
             daily_budget_usd: None,
+            prefer_tmux: true,
+            cleanup_tmux_on_exit: true,
         }
     }
 }

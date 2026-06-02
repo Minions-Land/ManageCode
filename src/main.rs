@@ -125,6 +125,10 @@ fn main() -> Result<()> {
     let mut terminal = Terminal::new(backend)?;
     let ExitRequest::Quit = run_loop(&mut terminal, &mut app)?;
     leave_tui(&mut terminal)?;
+    // Tidy up the temporary tmux sessions we created this run.
+    if app.config.cleanup_tmux_on_exit {
+        tmux::kill_all_managed();
+    }
     Ok(())
 }
 

@@ -87,9 +87,18 @@ in a managed background process. The terminal pane attaches to it, so:
 
 To force-end a backgrounded session: select it, press `K`, confirm.
 
+When you quit ManageCode it tidies up after itself: every `mc-*` tmux
+session it spun up this run is killed on exit. Set
+`"cleanup_tmux_on_exit": false` in `~/.managecode/config.json` to leave them
+running in the background instead. You can also opt out of tmux entirely with
+`"prefer_tmux": false` (always run directly in the embedded PTY).
+
 Without `tmux`, ManageCode still works — the embedded terminal just runs
-claude directly. Exit claude the normal way (`/exit`, `Ctrl-D`) and the
-pane closes back to the dashboard.
+claude directly, but launches don't persist when you switch away. Install
+tmux (`brew install tmux` / `sudo apt install tmux`) for the
+switch-back-and-forth experience; ManageCode reminds you at startup if it's
+missing. Exit claude the normal way (`/exit`, `Ctrl-D`) and the pane closes
+back to the dashboard.
 
 ## Highlights
 

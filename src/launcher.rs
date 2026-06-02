@@ -37,7 +37,7 @@ fn find_claude_binary() -> Option<String> {
 /// PTY (so it persists across detach/quit); otherwise the command runs directly
 /// in the PTY.
 pub fn open_terminal_for(app: &mut App, pending: PendingExec) {
-    let use_tmux = tmux::available() && !tmux::inside_tmux();
+    let use_tmux = app.config.prefer_tmux && tmux::available() && !tmux::inside_tmux();
 
     // A plain shell needs no claude binary, so handle it up front; the remaining
     // arms all require claude, so resolve and check it once for them.

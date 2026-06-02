@@ -347,6 +347,13 @@ impl App {
             watch_rx,
         };
         app.kick_scan();
+        // Persistent, switch-back-and-forth sessions rely on tmux; nudge the
+        // user to install it when it's missing (and we'd want to use it).
+        if app.config.prefer_tmux && !app.tmux_available && !tmux::inside_tmux() {
+            app.flash(
+                "tmux not found — install tmux for persistent sessions you can detach & resume",
+            );
+        }
         app
     }
 
