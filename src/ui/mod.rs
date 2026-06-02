@@ -145,6 +145,17 @@ fn sep(color: Color) -> Span<'static> {
     Span::styled("  ·  ", Style::default().fg(color))
 }
 
+/// Format a single USD amount for display. Uses 2 decimals (so amounts line up
+/// and read cleanly), but keeps 4 decimals for small non-zero amounts under
+/// $0.10 so sub-cent costs don't collapse to `$0.00`.
+fn fmt_usd(v: f64) -> String {
+    if v > 0.0 && v < 0.10 {
+        format!("${:.4}", v)
+    } else {
+        format!("${:.2}", v)
+    }
+}
+
 fn draw_header(f: &mut Frame, area: Rect, app: &App, tier: Layoutness) {
     let spin = SPINNER[app.spinner_phase % SPINNER.len()];
     let total = app.total_cost();
@@ -247,7 +258,7 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App, tier: Layoutness) {
                     } else {
                         LIVE
                     };
-                    (format!("today ${:.2}/{:.0}", today, limit), c)
+                    (format!("today ${:.2}/{:.2}", today, limit), c)
                 }
                 _ => (format!("today ${:.2}", today), LIVE),
             };
@@ -655,7 +666,7 @@ fn draw_detail(f: &mut Frame, area: Rect, app: &App, tier: Layoutness) {
     lines.push(Line::from(vec![
         Span::styled("cost  ", Style::default().fg(MUTED)),
         Span::styled(
-            format!("${:.4}", session.cost),
+            fmt_usd(session.cost),
             Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
         ),
     ]));
@@ -666,7 +677,7 @@ fn draw_detail(f: &mut Frame, area: Rect, app: &App, tier: Layoutness) {
         lines.push(Line::from(vec![
             Span::styled("saved by cache  ", Style::default().fg(MUTED)),
             Span::styled(
-                format!("${:.4}", saved),
+                fmt_usd(saved),
                 Style::default().fg(LIVE).add_modifier(Modifier::BOLD),
             ),
         ]));
@@ -912,7 +923,7 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App, tier: Layoutness) {
                 ),
                 Span::raw("  "),
                 Span::styled(
-                    format!("${:.4}", s.cost),
+                    fmt_usd(s.cost),
                     Style::default().fg(TEXT),
                 ),
                 sep(ACCENT_DIM),
