@@ -102,6 +102,21 @@ impl TreeNode {
     }
 }
 
+/// Non-empty path components of an absolute path (`/a//b/` → `a`, `b`).
+fn path_segments(p: &str) -> impl Iterator<Item = &str> {
+    p.split('/').filter(|c| !c.is_empty())
+}
+
+/// Follow a single-child, session-less chain (path compression) to the node
+/// that actually renders as one tree row.
+fn compress(node: &TreeNode) -> &TreeNode {
+    let mut cur = node;
+    while cur.sessions.is_empty() && cur.children.len() == 1 {
+        cur = cur.children.values().next().unwrap();
+    }
+    cur
+}
+
 /// Is `anc` the same directory as `path`, or an ancestor of it?
 fn is_ancestor_or_eq(anc: &str, path: &str) -> bool {
     path == anc || path.starts_with(&format!("{anc}/"))
@@ -109,7 +124,7 @@ fn is_ancestor_or_eq(anc: &str, path: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::is_ancestor_or_eq;
+    use super::{compress, is_ancestor_or_eq, TreeNode};
 
     #[test]
     fn ancestor_matching() {
@@ -117,6 +132,47 @@ mod tests {
         assert!(is_ancestor_or_eq("/a/b", "/a/b/c")); // ancestor
         assert!(!is_ancestor_or_eq("/a/b", "/a/bc")); // not a path boundary
         assert!(!is_ancestor_or_eq("/a/b", "/a")); // parent, not ancestor
+    }
+
+    /// Build a node at `path` with the given child names (each a leaf with one
+    /// session so compression stops there).
+    fn node(path: &str, children: &[&str]) -> TreeNode {
+        let mut n = TreeNode {
+            path: path.to_string(),
+            ..TreeNode::default()
+        };
+        for c in children {
+            let cp = format!("{path}/{c}");
+            n.children.insert(
+                c.to_string(),
+                TreeNode {
+                    path: cp,
+                    name: c.to_string(),
+                    sessions: vec![0], // a session => not further compressible
+                    ..TreeNode::default()
+                },
+            );
+        }
+        n
+    }
+
+    #[test]
+    fn compress_collapses_single_child_chain() {
+        // /a -> /a/b -> /a/b/c (single, session-less chain) compresses to /a/b/c.
+        let mut a = node("/a", &[]);
+        let mut b = node("/a/b", &[]);
+        let c = node("/a/b/c", &["x", "y"]); // branches: chain stops here
+        b.children.insert("c".into(), c);
+        a.children.insert("b".into(), b);
+        assert_eq!(compress(&a).path, "/a/b/c");
+
+        // A node that itself holds a session does not compress past itself.
+        let withseed = TreeNode {
+            path: "/p".into(),
+            sessions: vec![0],
+            ..TreeNode::default()
+        };
+        assert_eq!(compress(&withseed).path, "/p");
     }
 }
 
@@ -604,26 +660,23 @@ impl App {
             AiEvent::SearchHit(opt) => {
                 self.ai_running = false;
                 match opt {
-                    Some(id) => {
-                        let vis = self.visible_session_indices();
-                        if let Some(pos) = vis.iter().position(|i| self.sessions[*i].id == id) {
-                            self.selected = pos;
+                    Some(id) => match self.sessions.iter().position(|s| s.id == id) {
+                        Some(real) if self.select_by_real_index(real).is_some() => {
                             self.flash("AI: found a match");
-                        } else if let Some(pos_all) = self.sessions.iter().position(|s| s.id == id)
-                        {
-                            // The match might be hidden by filter or collapsed group; expose it.
-                            let cwd = self.sessions[pos_all].cwd.clone();
-                            self.collapsed_groups.remove(&cwd);
-                            self.filter.clear();
-                            let vis = self.visible_session_indices();
-                            if let Some(p) = vis.iter().position(|i| self.sessions[*i].id == id) {
-                                self.selected = p;
-                            }
-                            self.flash("AI: cleared filter to reveal match");
-                        } else {
-                            self.flash("AI: match not in current list");
                         }
-                    }
+                        Some(real) => {
+                            // Hidden by filter or a collapsed group; expose it.
+                            let cwd = self.sessions[real].cwd.clone();
+                            self.reveal_path(&cwd);
+                            self.filter.clear();
+                            if self.select_by_real_index(real).is_some() {
+                                self.flash("AI: cleared filter to reveal match");
+                            } else {
+                                self.flash("AI: match not in current list");
+                            }
+                        }
+                        None => self.flash("AI: match not in current list"),
+                    },
                     None => self.flash("AI: no match"),
                 }
             }
@@ -729,18 +782,6 @@ impl App {
             .collect()
     }
 
-    /// Is a session at `cwd` hidden by the current view's collapse set?
-    fn session_hidden(&self, cwd: &str) -> bool {
-        match self.view {
-            ViewMode::Flat => false,
-            ViewMode::Grouped => self.collapsed_groups.contains(cwd),
-            ViewMode::Tree => self
-                .collapsed_groups
-                .iter()
-                .any(|p| is_ancestor_or_eq(p, cwd)),
-        }
-    }
-
     /// In Tree view, is `cwd` within the configured root? Always true in other
     /// views or when no root is set.
     fn in_tree_scope(&self, cwd: &str) -> bool {
@@ -748,25 +789,6 @@ impl App {
             return true;
         }
         is_ancestor_or_eq(&self.tree_root, cwd)
-    }
-
-    /// Sessions visible to the user — filtered, minus any inside a collapsed
-    /// group or subtree, and (in Tree view) outside the root. This is what
-    /// `selected` indexes into.
-    pub fn visible_session_indices(&self) -> Vec<usize> {
-        let filtered = self.filtered_indices();
-        let root_scoped = matches!(self.view, ViewMode::Tree) && !self.tree_root.is_empty();
-        if matches!(self.view, ViewMode::Flat) || (self.collapsed_groups.is_empty() && !root_scoped)
-        {
-            return filtered;
-        }
-        filtered
-            .into_iter()
-            .filter(|&i| {
-                let cwd = &self.sessions[i].cwd;
-                !self.session_hidden(cwd) && self.in_tree_scope(cwd)
-            })
-            .collect()
     }
 
     /// Headers / tree nodes + sessions woven together in display order.
@@ -816,7 +838,8 @@ impl App {
         out
     }
 
-    fn tree_rows(&self, filtered: &[usize]) -> Vec<Row> {
+    /// Build the directory trie from the in-scope filtered sessions.
+    fn build_tree(&self, filtered: &[usize]) -> TreeNode {
         let mut root = TreeNode::default();
         for &idx in filtered {
             let cwd = self.sessions[idx].cwd.clone();
@@ -825,7 +848,7 @@ impl App {
             }
             let mut node = &mut root;
             let mut path = String::new();
-            for c in cwd.split('/').filter(|c| !c.is_empty()) {
+            for c in path_segments(&cwd) {
                 path.push('/');
                 path.push_str(c);
                 node = node
@@ -839,12 +862,41 @@ impl App {
             }
             node.sessions.push(idx);
         }
+        root
+    }
 
+    fn tree_rows(&self, filtered: &[usize]) -> Vec<Row> {
+        let root = self.build_tree(filtered);
         let mut out: Vec<Row> = Vec::new();
         for child in root.children.values() {
             self.emit_tree(child, 0, &mut out);
         }
         out
+    }
+
+    /// The compressed paths of the immediate child nodes of the tree node
+    /// rendered at `parent_path`. Used to collapse children one level on expand
+    /// (file-explorer behavior). Empty if the node has no child directories.
+    fn immediate_child_paths(&self, parent_path: &str) -> Vec<String> {
+        fn find<'a>(node: &'a TreeNode, target: &str) -> Option<&'a TreeNode> {
+            let cur = compress(node);
+            if cur.path == target {
+                return Some(cur);
+            }
+            cur.children.values().find_map(|c| find(c, target))
+        }
+        let filtered = self.filtered_indices();
+        let root = self.build_tree(&filtered);
+        root.children
+            .values()
+            .find_map(|top| find(top, parent_path))
+            .map(|node| {
+                node.children
+                    .values()
+                    .map(|c| compress(c).path.clone())
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     fn emit_tree(&self, node: &TreeNode, depth: usize, out: &mut Vec<Row>) {
@@ -880,9 +932,15 @@ impl App {
         }
     }
 
+    /// The session under the cursor, or `None` if the cursor is on a directory
+    /// header / tree node (which are also selectable rows now).
     pub fn selected_session(&self) -> Option<&SessionInfo> {
-        let idxs = self.visible_session_indices();
-        idxs.get(self.selected).and_then(|i| self.sessions.get(*i))
+        let rows = self.visible_rows();
+        if let Some(Row::Session { idx, .. }) = rows.get(self.selected) {
+            self.sessions.get(*idx)
+        } else {
+            None
+        }
     }
 
     /// Cycle the sidebar layout: grouped → tree → flat.
@@ -892,17 +950,16 @@ impl App {
         self.flash(self.view.label());
     }
 
+    /// Toggle the collapse state of the row under the cursor. On a header / tree
+    /// node that's the node itself; on a session it's the session's directory.
     pub fn toggle_group_of_selection(&mut self) {
-        if let Some(s) = self.selected_session() {
-            let cwd = s.cwd.clone();
-            if self.collapsed_groups.contains(&cwd) {
-                self.collapsed_groups.remove(&cwd);
-            } else {
-                self.collapsed_groups.insert(cwd);
-                // Move selection to a still-visible session.
-                self.clamp_selection();
-            }
-        }
+        let key = match self.visible_rows().get(self.selected) {
+            Some(Row::Header { cwd, .. }) => cwd.clone(),
+            Some(Row::Tree { path, .. }) => path.clone(),
+            Some(Row::Session { idx, .. }) => self.sessions[*idx].cwd.clone(),
+            None => return,
+        };
+        self.toggle_collapse(&key);
     }
 
     pub fn collapse_all_inactive(&mut self) {
@@ -935,7 +992,7 @@ impl App {
                 let cwds: Vec<String> = self.sessions.iter().map(|s| s.cwd.clone()).collect();
                 for cwd in cwds {
                     let mut path = String::new();
-                    for c in cwd.split('/').filter(|c| !c.is_empty()) {
+                    for c in path_segments(&cwd) {
                         path.push('/');
                         path.push_str(c);
                         self.collapsed_groups.insert(path.clone());
@@ -1000,7 +1057,7 @@ impl App {
     }
 
     pub fn clamp_selection(&mut self) {
-        let len = self.visible_session_indices().len();
+        let len = self.visible_rows().len();
         if len == 0 {
             self.selected = 0;
             return;
@@ -1011,7 +1068,9 @@ impl App {
     }
 
     pub fn move_selection(&mut self, delta: isize) {
-        let len = self.visible_session_indices().len();
+        // Selection indexes every visible row (headers, tree nodes, sessions) so
+        // a collapsed directory can always be moved onto and reopened.
+        let len = self.visible_rows().len();
         if len == 0 {
             return;
         }
@@ -1122,24 +1181,51 @@ impl App {
     }
 
     /// Select the session with this real index (clicked in the list), if it is
-    /// currently visible. Returns the visible-list position chosen.
+    /// currently visible. Returns the visible-row position chosen.
     pub fn select_by_real_index(&mut self, real_idx: usize) -> Option<usize> {
         let pos = self
-            .visible_session_indices()
+            .visible_rows()
             .iter()
-            .position(|&i| i == real_idx)?;
+            .position(|r| matches!(r, Row::Session { idx, .. } if *idx == real_idx))?;
         self.selected = pos;
         Some(pos)
     }
 
-    /// Toggle a group's collapsed state by cwd (clicked on its header).
-    pub fn toggle_group(&mut self, cwd: &str) {
-        if self.collapsed_groups.contains(cwd) {
-            self.collapsed_groups.remove(cwd);
+    /// Toggle a directory's collapsed state by its key (cwd in Grouped, node
+    /// path in Tree). In Tree view, expanding reveals only the immediate
+    /// children — which stay collapsed — so opening a folder drills one level
+    /// at a time instead of fanning the whole subtree open.
+    pub fn toggle_collapse(&mut self, key: &str) {
+        if self.collapsed_groups.contains(key) {
+            self.collapsed_groups.remove(key);
+            if matches!(self.view, ViewMode::Tree) {
+                for child in self.immediate_child_paths(key) {
+                    self.collapsed_groups.insert(child);
+                }
+            }
         } else {
-            self.collapsed_groups.insert(cwd.to_string());
+            self.collapsed_groups.insert(key.to_string());
         }
         self.clamp_selection();
+    }
+
+    /// Un-collapse everything hiding `cwd` (the directory itself or any ancestor
+    /// node) so the session there becomes visible.
+    pub fn reveal_path(&mut self, cwd: &str) {
+        self.collapsed_groups.retain(|p| !is_ancestor_or_eq(p, cwd));
+    }
+
+    /// Move the cursor onto the row for `key` (header / tree node) and toggle it
+    /// — used when a header is clicked so the keyboard cursor follows the mouse.
+    pub fn select_and_toggle(&mut self, key: &str) {
+        if let Some(pos) = self.visible_rows().iter().position(|r| match r {
+            Row::Header { cwd, .. } => cwd == key,
+            Row::Tree { path, .. } => path == key,
+            _ => false,
+        }) {
+            self.selected = pos;
+        }
+        self.toggle_collapse(key);
     }
 
     /// Distinct session cwds, most-recently-active first (sessions are already

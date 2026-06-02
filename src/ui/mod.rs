@@ -72,6 +72,10 @@ pub fn draw(f: &mut Frame, app: &App) {
 
     draw_header(f, layout[0], app, tier);
 
+    // Build the visible rows once per frame and share them with the list,
+    // detail, and footer (each used to rebuild them independently).
+    let rows = app.visible_rows();
+
     if app.has_terminal() {
         // Sidebar (session list) + live embedded terminal.
         let body = Layout::default()
@@ -79,7 +83,7 @@ pub fn draw(f: &mut Frame, app: &App) {
             .constraints([Constraint::Percentage(32), Constraint::Min(40)])
             .split(layout[1]);
         let term_focused = matches!(app.mode, Mode::Terminal);
-        draw_session_list(f, body[0], app, Layoutness::Narrow);
+        draw_session_list(f, body[0], app, Layoutness::Narrow, &rows);
         draw_terminal_pane(f, body[1], app, term_focused);
     } else {
         match tier {
@@ -88,24 +92,24 @@ pub fn draw(f: &mut Frame, app: &App) {
                     .direction(Direction::Horizontal)
                     .constraints([Constraint::Percentage(45), Constraint::Min(40)])
                     .split(layout[1]);
-                draw_session_list(f, body[0], app, tier);
-                draw_detail(f, body[1], app, tier);
+                draw_session_list(f, body[0], app, tier, &rows);
+                draw_detail(f, body[1], app, tier, &rows);
             }
             Layoutness::Stacked => {
                 let body = Layout::default()
                     .direction(Direction::Vertical)
                     .constraints([Constraint::Percentage(60), Constraint::Min(8)])
                     .split(layout[1]);
-                draw_session_list(f, body[0], app, tier);
-                draw_detail(f, body[1], app, tier);
+                draw_session_list(f, body[0], app, tier, &rows);
+                draw_detail(f, body[1], app, tier, &rows);
             }
             Layoutness::Narrow => {
-                draw_session_list(f, layout[1], app, tier);
+                draw_session_list(f, layout[1], app, tier, &rows);
             }
         }
     }
 
-    draw_footer(f, layout[2], app, tier);
+    draw_footer(f, layout[2], app, tier, &rows);
 
     // Modal overlays.
     match &app.mode {
@@ -145,6 +149,42 @@ fn panel_block(title: &str, focused: bool) -> Block<'_> {
 /// The "  ·  " dot separator used between header / footer segments.
 fn sep(color: Color) -> Span<'static> {
     Span::styled("  ·  ", Style::default().fg(color))
+}
+
+/// The session under a given row index, or `None` if it's a header / tree node.
+fn session_at<'a>(app: &'a App, rows: &[Row], selected: usize) -> Option<&'a SessionInfo> {
+    match rows.get(selected) {
+        Some(Row::Session { idx, .. }) => app.sessions.get(*idx),
+        _ => None,
+    }
+}
+
+/// The selection-highlight style (foreground on the accent bar), bold or not.
+fn sel_style(bold: bool) -> Style {
+    let s = Style::default().fg(SEL_FG).bg(ACCENT);
+    if bold {
+        s.add_modifier(Modifier::BOLD)
+    } else {
+        s
+    }
+}
+
+/// Trailing `●{alive}  {total}` count spans shared by group headers and tree
+/// nodes.
+fn count_spans(alive: usize, total: usize) -> Vec<Span<'static>> {
+    let mut spans = vec![Span::raw("  ")];
+    if alive > 0 {
+        spans.push(Span::styled(
+            format!("●{}", alive),
+            Style::default().fg(LIVE),
+        ));
+        spans.push(Span::raw(" "));
+    }
+    spans.push(Span::styled(
+        format!("{}", total),
+        Style::default().fg(MUTED),
+    ));
+    spans
 }
 
 /// Format a single USD amount for display. Uses 2 decimals (so amounts line up
@@ -300,12 +340,11 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App, tier: Layoutness) {
     f.render_widget(Paragraph::new(stats), cols[1]);
 }
 
-fn draw_session_list(f: &mut Frame, area: Rect, app: &App, tier: Layoutness) {
+fn draw_session_list(f: &mut Frame, area: Rect, app: &App, tier: Layoutness, rows: &[Row]) {
     let block = panel_block("Sessions", matches!(app.mode, Mode::Browse | Mode::Filter));
     let inner = block.inner(area);
     f.render_widget(block, area);
 
-    let rows = app.visible_rows();
     // Reset the click hit-map; it is rebuilt as rows are drawn below.
     app.list_hits.borrow_mut().clear();
     if rows.is_empty() {
@@ -341,24 +380,9 @@ fn draw_session_list(f: &mut Frame, area: Rect, app: &App, tier: Layoutness) {
         })
         .collect();
 
-    // Visible session indices are needed twice below; compute once.
-    let visible_sessions = app.visible_session_indices();
-    let selected_session_real = visible_sessions.get(app.selected).copied();
-
-    // Find the row index that corresponds to App.selected (counting sessions only).
-    let selected_row_idx = {
-        let target = selected_session_real;
-        let mut chosen = 0usize;
-        for (i, r) in rows.iter().enumerate() {
-            if let Row::Session { idx, .. } = r {
-                if Some(*idx) == target {
-                    chosen = i;
-                    break;
-                }
-            }
-        }
-        chosen
-    };
+    // Selection indexes every visible row directly (headers, tree nodes,
+    // sessions), so the cursor can land on — and reopen — a collapsed directory.
+    let selected_row_idx = app.selected.min(rows.len().saturating_sub(1));
 
     // Pick start_row so that [start_row..] cumulatively fits and includes selected_row_idx.
     let mut start_row = 0usize;
@@ -381,7 +405,7 @@ fn draw_session_list(f: &mut Frame, area: Rect, app: &App, tier: Layoutness) {
     let mut y = inner.y;
     let max_y = inner.y + inner.height;
 
-    for (_ri, row) in rows.iter().enumerate().skip(start_row) {
+    for (ri, row) in rows.iter().enumerate().skip(start_row) {
         let h = match row {
             Row::Header { .. } => 1,
             Row::Tree { .. } => 1,
@@ -390,6 +414,7 @@ fn draw_session_list(f: &mut Frame, area: Rect, app: &App, tier: Layoutness) {
         if y + h > max_y {
             break;
         }
+        let selected = ri == selected_row_idx;
 
         match row {
             Row::Header {
@@ -413,6 +438,7 @@ fn draw_session_list(f: &mut Frame, area: Rect, app: &App, tier: Layoutness) {
                     *total,
                     *alive,
                     *collapsed,
+                    selected,
                 );
             }
             Row::Tree {
@@ -439,6 +465,7 @@ fn draw_session_list(f: &mut Frame, area: Rect, app: &App, tier: Layoutness) {
                     *total,
                     *alive,
                     *collapsed,
+                    selected,
                 );
             }
             Row::Session {
@@ -449,7 +476,6 @@ fn draw_session_list(f: &mut Frame, area: Rect, app: &App, tier: Layoutness) {
                     .borrow_mut()
                     .push((y, h, RowHit::Session(*real_idx)));
                 let session = &app.sessions[*real_idx];
-                let selected = selected_session_real == Some(*real_idx);
                 let tmux_backed = app.tmux_backed.contains(&session.id);
                 draw_session_row(
                     f,
@@ -472,6 +498,7 @@ fn draw_session_list(f: &mut Frame, area: Rect, app: &App, tier: Layoutness) {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn draw_group_header(
     f: &mut Frame,
     area: Rect,
@@ -479,28 +506,28 @@ fn draw_group_header(
     total: usize,
     alive: usize,
     collapsed: bool,
+    selected: bool,
 ) {
     let chevron = if collapsed { "▸" } else { "▾" };
     let name = short_path(cwd);
+    let chevron_style = if selected {
+        sel_style(false)
+    } else {
+        Style::default().fg(ACCENT_DIM)
+    };
+    let name_style = if selected {
+        sel_style(true)
+    } else {
+        Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)
+    };
     let mut spans: Vec<Span> = vec![
-        Span::styled(format!(" {} ", chevron), Style::default().fg(ACCENT_DIM)),
+        Span::styled(format!(" {} ", chevron), chevron_style),
         Span::styled(
             truncate(&name, (area.width as usize).saturating_sub(18)),
-            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+            name_style,
         ),
-        Span::raw("  "),
     ];
-    if alive > 0 {
-        spans.push(Span::styled(
-            format!("●{}", alive),
-            Style::default().fg(LIVE),
-        ));
-        spans.push(Span::raw(" "));
-    }
-    spans.push(Span::styled(
-        format!("{}", total),
-        Style::default().fg(MUTED),
-    ));
+    spans.extend(count_spans(alive, total));
     f.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
@@ -513,30 +540,27 @@ fn draw_tree_row(
     total: usize,
     alive: usize,
     collapsed: bool,
+    selected: bool,
 ) {
     let chevron = if collapsed { "▸" } else { "▾" };
     let indent = "  ".repeat(depth);
     let avail = (area.width as usize).saturating_sub(depth * 2 + 12);
+    let chevron_style = if selected {
+        sel_style(false)
+    } else {
+        Style::default().fg(ACCENT_DIM)
+    };
+    let name_style = if selected {
+        sel_style(true)
+    } else {
+        Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)
+    };
     let mut spans: Vec<Span> = vec![
         Span::raw(format!(" {}", indent)),
-        Span::styled(format!("{} ", chevron), Style::default().fg(ACCENT_DIM)),
-        Span::styled(
-            truncate(name, avail.max(4)),
-            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
-        ),
-        Span::raw("  "),
+        Span::styled(format!("{} ", chevron), chevron_style),
+        Span::styled(truncate(name, avail.max(4)), name_style),
     ];
-    if alive > 0 {
-        spans.push(Span::styled(
-            format!("●{}", alive),
-            Style::default().fg(LIVE),
-        ));
-        spans.push(Span::raw(" "));
-    }
-    spans.push(Span::styled(
-        format!("{}", total),
-        Style::default().fg(MUTED),
-    ));
+    spans.extend(count_spans(alive, total));
     f.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
@@ -574,22 +598,19 @@ fn draw_session_row(
     };
 
     let name_style = if selected {
-        Style::default()
-            .fg(SEL_FG)
-            .bg(ACCENT)
-            .add_modifier(Modifier::BOLD)
+        sel_style(true)
     } else if session.is_recently_active() {
         Style::default().fg(TEXT)
     } else {
         Style::default().fg(MUTED)
     };
     let cost_style = if selected {
-        Style::default().fg(SEL_FG).bg(ACCENT)
+        sel_style(false)
     } else {
         Style::default().fg(ACCENT_DIM)
     };
     let model_style = if selected {
-        Style::default().fg(SEL_FG).bg(ACCENT)
+        sel_style(false)
     } else {
         Style::default().fg(MUTED)
     };
@@ -676,12 +697,12 @@ fn draw_session_row(
     );
 }
 
-fn draw_detail(f: &mut Frame, area: Rect, app: &App, tier: Layoutness) {
+fn draw_detail(f: &mut Frame, area: Rect, app: &App, tier: Layoutness, rows: &[Row]) {
     let block = panel_block("Detail", false);
     let inner = block.inner(area);
     f.render_widget(block, area);
 
-    let session = match app.selected_session() {
+    let session = match session_at(app, rows, app.selected) {
         Some(s) => s,
         None => {
             let p = Paragraph::new(Span::styled(
@@ -695,24 +716,32 @@ fn draw_detail(f: &mut Frame, area: Rect, app: &App, tier: Layoutness) {
     };
 
     let mut lines: Vec<Line> = Vec::new();
+    let inner_w = inner.width as usize;
     let title_color = if session.is_alive { LIVE } else { ACCENT };
     lines.push(Line::from(vec![Span::styled(
-        session.name.clone(),
+        truncate(&session.name, inner_w),
         Style::default()
             .fg(title_color)
             .add_modifier(Modifier::BOLD),
     )]));
     lines.push(Line::from(vec![Span::styled(
-        short_path(&session.cwd),
+        truncate(&short_path(&session.cwd), inner_w),
         Style::default().fg(MUTED),
     )]));
     lines.push(Line::raw(""));
 
     let compact = matches!(tier, Layoutness::Stacked);
-    lines.push(meta_row("session", short_id(&session.id)));
-    if session.source == crate::models::Source::Codex {
-        lines.push(meta_row("source", session.source.tag().to_string()));
-    }
+    // ID block: source tag + full id, then the exact resume command (so it's
+    // readable/copyable rather than a truncated "abc1234…").
+    lines.push(meta_row("source", session.source.tag().to_string()));
+    lines.push(meta_row(
+        "id",
+        truncate(&session.id, inner_w.saturating_sub(15)),
+    ));
+    lines.push(meta_row(
+        "resume",
+        truncate(&resume_hint(session), inner_w.saturating_sub(15)),
+    ));
     lines.push(meta_row(
         "model",
         session.model.clone().unwrap_or_else(|| "—".into()),
@@ -780,8 +809,9 @@ fn draw_detail(f: &mut Frame, area: Rect, app: &App, tier: Layoutness) {
         ]));
     }
 
-    let p = Paragraph::new(lines).wrap(Wrap { trim: false });
-    f.render_widget(p, inner);
+    // No wrap: each line is already truncated to the panel width, so a long id
+    // / path / model clips cleanly at the edge instead of wrapping oddly.
+    f.render_widget(Paragraph::new(lines), inner);
 
     // Token mix gauge under detail content if there's room.
     let gauge_height = 3;
@@ -848,8 +878,12 @@ fn format_num(n: u64) -> String {
     out
 }
 
-fn short_id(id: &str) -> String {
-    id.chars().take(8).collect::<String>() + "…"
+/// The exact CLI command to resume this session, by its owning tool.
+fn resume_hint(s: &SessionInfo) -> String {
+    match s.source {
+        crate::models::Source::Claude => format!("claude --resume {}", s.id),
+        crate::models::Source::Codex => format!("codex resume {}", s.id),
+    }
 }
 
 fn saved_by_cache(s: &SessionInfo) -> f64 {
@@ -957,7 +991,7 @@ fn draw_terminal_footer(f: &mut Frame, area: Rect, app: &App) {
     );
 }
 
-fn draw_footer(f: &mut Frame, area: Rect, app: &App, tier: Layoutness) {
+fn draw_footer(f: &mut Frame, area: Rect, app: &App, tier: Layoutness, rows: &[Row]) {
     // Terminal pane focused: a dedicated footer shows the configured prefix.
     if matches!(app.mode, Mode::Terminal) {
         draw_terminal_footer(f, area, app);
@@ -1018,7 +1052,7 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App, tier: Layoutness) {
 
     if narrow {
         // Two-line footer: selection summary + key hints.
-        if let Some(s) = app.selected_session() {
+        if let Some(s) = session_at(app, rows, app.selected) {
             let summary = Line::from(vec![
                 Span::styled(
                     model_short(s.model.as_deref()).to_string(),
