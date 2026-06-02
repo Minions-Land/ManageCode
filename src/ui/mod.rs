@@ -343,10 +343,13 @@ fn draw_session_list(f: &mut Frame, area: Rect, app: &App, tier: Layoutness) {
         })
         .collect();
 
+    // Visible session indices are needed twice below; compute once.
+    let visible_sessions = app.visible_session_indices();
+    let selected_session_real = visible_sessions.get(app.selected).copied();
+
     // Find the row index that corresponds to App.selected (counting sessions only).
     let selected_row_idx = {
-        let visible_sessions = app.visible_session_indices();
-        let target = visible_sessions.get(app.selected).copied();
+        let target = selected_session_real;
         let mut chosen = 0usize;
         for (i, r) in rows.iter().enumerate() {
             if let Row::Session(idx) = r {
@@ -379,8 +382,6 @@ fn draw_session_list(f: &mut Frame, area: Rect, app: &App, tier: Layoutness) {
 
     let mut y = inner.y;
     let max_y = inner.y + inner.height;
-    let visible_sessions = app.visible_session_indices();
-    let selected_session_real = visible_sessions.get(app.selected).copied();
 
     for (_ri, row) in rows.iter().enumerate().skip(start_row) {
         let h = match row {

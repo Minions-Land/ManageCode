@@ -24,12 +24,7 @@ fn find_claude() -> Option<PathBuf> {
         candidates.push(home.join(".claude/local/bin/claude"));
         candidates.push(home.join(".local/bin/claude"));
     }
-    for c in candidates {
-        if c.is_file() {
-            return Some(c);
-        }
-    }
-    None
+    candidates.into_iter().find(|c| c.is_file())
 }
 
 /// One-shot to `claude --print --model haiku`. Writes prompt to stdin, returns

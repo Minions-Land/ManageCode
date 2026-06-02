@@ -213,8 +213,12 @@ impl Keymap {
             keys_of.insert(b.action, b.keys.to_vec());
         }
         // Apply char overrides: replace an action's char key(s); keep any
-        // non-char defaults (arrows, page keys, enter, tab).
-        for (name, spec) in overrides {
+        // non-char defaults (arrows, page keys, enter, tab). Process in a
+        // deterministic (action-name) order so two overrides onto the same key
+        // resolve identically every run.
+        let mut sorted: Vec<(&String, &String)> = overrides.iter().collect();
+        sorted.sort_by(|a, b| a.0.cmp(b.0));
+        for (name, spec) in sorted {
             if let (Some(action), Ok(ks)) = (BrowseAction::from_name(name), KeySpec::parse(spec)) {
                 if let Some(ch) = keyspec_char(&ks) {
                     let entry = keys_of.entry(action).or_default();
@@ -223,12 +227,15 @@ impl Keymap {
                 }
             }
         }
-        // Build the forward lookup. A later action wins a contested chord, which
-        // is what the user asked for when they remapped onto an occupied key.
+        // Build the forward lookup in DEFAULT_BINDINGS order; the first action
+        // to claim a chord wins. This is deterministic regardless of HashMap
+        // iteration order (which is randomized in Rust).
         let mut forward: HashMap<Chord, BrowseAction> = HashMap::new();
-        for (action, chords) in &keys_of {
-            for c in chords {
-                forward.insert(*c, *action);
+        for b in DEFAULT_BINDINGS {
+            if let Some(chords) = keys_of.get(&b.action) {
+                for c in chords {
+                    forward.entry(*c).or_insert(b.action);
+                }
             }
         }
         Keymap { forward, keys_of }
@@ -323,6 +330,18 @@ mod tests {
         for r in rows {
             assert!(!r.keys.is_empty(), "empty key label for: {}", r.desc);
         }
+    }
+
+    #[test]
+    fn conflicting_remaps_are_deterministic() {
+        // Map both Quit and Filter onto 'x'; the winner must be stable.
+        let mut cfg = HashMap::new();
+        cfg.insert("quit".to_string(), "x".to_string());
+        cfg.insert("filter".to_string(), "x".to_string());
+        let a = Keymap::from_config(&cfg).action_for(KeyCode::Char('x'));
+        let b = Keymap::from_config(&cfg).action_for(KeyCode::Char('x'));
+        assert_eq!(a, b);
+        assert!(a.is_some());
     }
 
     #[test]

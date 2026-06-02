@@ -315,6 +315,8 @@ pub struct App {
     pub message: Option<(String, Instant)>,
     pub custom_names: HashMap<String, String>,
     pub view: ViewMode,
+    /// Collapsed directories. In Grouped view these are session `cwd`s; in Tree
+    /// view they are tree-node paths (which may be ancestors of a session cwd).
     pub collapsed_groups: HashSet<String>,
     pub ai_running: bool,
     pub auto_naming: bool,
@@ -687,20 +689,25 @@ impl App {
     }
 
     fn grouped_rows(&self, filtered: &[usize]) -> Vec<Row> {
+        // Pre-count sessions per cwd in a single pass so each header lookup is
+        // O(1) — same totals as before, but O(n) instead of O(groups·n).
+        let mut counts: HashMap<&str, (usize, usize)> = HashMap::new();
+        for &i in filtered {
+            let s = &self.sessions[i];
+            let e = counts.entry(s.cwd.as_str()).or_insert((0, 0));
+            e.0 += 1;
+            if s.is_alive {
+                e.1 += 1;
+            }
+        }
+
         let mut out: Vec<Row> = Vec::new();
-        let mut last_cwd: Option<String> = None;
+        let mut last_cwd: Option<&str> = None;
         for &idx in filtered {
             let s = &self.sessions[idx];
-            if last_cwd.as_deref() != Some(&s.cwd) {
-                last_cwd = Some(s.cwd.clone());
-                let total = filtered
-                    .iter()
-                    .filter(|&&j| self.sessions[j].cwd == s.cwd)
-                    .count();
-                let alive = filtered
-                    .iter()
-                    .filter(|&&j| self.sessions[j].cwd == s.cwd && self.sessions[j].is_alive)
-                    .count();
+            if last_cwd != Some(s.cwd.as_str()) {
+                last_cwd = Some(s.cwd.as_str());
+                let (total, alive) = counts.get(s.cwd.as_str()).copied().unwrap_or((0, 0));
                 out.push(Row::Header {
                     cwd: s.cwd.clone(),
                     total,

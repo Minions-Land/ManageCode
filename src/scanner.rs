@@ -19,6 +19,17 @@ struct JsonlCache {
     cost_by_day: HashMap<String, f64>,
 }
 
+/// Parsed usage + metadata for one Claude session JSONL.
+#[derive(Default)]
+struct ParsedSession {
+    usage: TokenUsage,
+    model: Option<String>,
+    ai_title: Option<String>,
+    last_modified: Option<DateTime<Local>>,
+    cwd: Option<String>,
+    cost_by_day: HashMap<String, f64>,
+}
+
 static CACHE: Mutex<Option<HashMap<String, JsonlCache>>> = Mutex::new(None);
 
 fn cache_get(session_id: &str) -> Option<JsonlCache> {
@@ -111,9 +122,7 @@ fn datetime_of(t: SystemTime) -> DateTime<Local> {
         .unwrap_or_else(Local::now)
 }
 
-fn parse_usage_with_meta(
-    jsonl_path: &Path,
-) -> (TokenUsage, Option<String>, Option<String>, Option<DateTime<Local>>, Option<String>, HashMap<String, f64>) {
+fn parse_usage_with_meta(jsonl_path: &Path) -> ParsedSession {
     let session_id = jsonl_path
         .file_stem()
         .and_then(|s| s.to_str())
@@ -122,7 +131,7 @@ fn parse_usage_with_meta(
 
     let attrs = match fs::metadata(jsonl_path) {
         Ok(a) => a,
-        Err(_) => return (TokenUsage::default(), None, None, None, None, HashMap::new()),
+        Err(_) => return ParsedSession::default(),
     };
     let size = attrs.len();
     let mtime = attrs.modified().ok();
@@ -138,20 +147,25 @@ fn parse_usage_with_meta(
 
     if let Some(cached) = cache_get(&session_id) {
         if cached.fingerprint == fingerprint {
-            return (
-                cached.usage,
-                cached.model,
-                cached.ai_title,
-                mtime_dt,
-                cached.cwd,
-                cached.cost_by_day,
-            );
+            return ParsedSession {
+                usage: cached.usage,
+                model: cached.model,
+                ai_title: cached.ai_title,
+                last_modified: mtime_dt,
+                cwd: cached.cwd,
+                cost_by_day: cached.cost_by_day,
+            };
         }
     }
 
     let content = match fs::read_to_string(jsonl_path) {
         Ok(c) => c,
-        Err(_) => return (TokenUsage::default(), None, None, mtime_dt, None, HashMap::new()),
+        Err(_) => {
+            return ParsedSession {
+                last_modified: mtime_dt,
+                ..ParsedSession::default()
+            }
+        }
     };
 
     let mut usage = TokenUsage::default();
@@ -205,14 +219,23 @@ fn parse_usage_with_meta(
             .and_then(|v| v.as_u64())
             .unwrap_or(0);
         let (cc_5m, cc_1h) = match u.get("cache_creation").and_then(|v| v.as_object()) {
-            Some(cc) => (
-                cc.get("ephemeral_5m_input_tokens")
+            Some(cc) => {
+                let cc5 = cc
+                    .get("ephemeral_5m_input_tokens")
                     .and_then(|v| v.as_u64())
-                    .unwrap_or(0),
-                cc.get("ephemeral_1h_input_tokens")
+                    .unwrap_or(0);
+                let cc1 = cc
+                    .get("ephemeral_1h_input_tokens")
                     .and_then(|v| v.as_u64())
-                    .unwrap_or(0),
-            ),
+                    .unwrap_or(0);
+                // An empty or partial `cache_creation` object would otherwise
+                // drop the write tokens entirely — fall back to the aggregate.
+                if cc5 == 0 && cc1 == 0 {
+                    (cc_total, 0)
+                } else {
+                    (cc5, cc1)
+                }
+            }
             None => (cc_total, 0),
         };
         usage.total_input += in_t;
@@ -258,7 +281,14 @@ fn parse_usage_with_meta(
         },
     );
 
-    (usage, model, ai_title, mtime_dt, cwd, cost_by_day)
+    ParsedSession {
+        usage,
+        model,
+        ai_title,
+        last_modified: mtime_dt,
+        cwd,
+        cost_by_day,
+    }
 }
 
 /// Two-phase result: Phase 1 (live + recent) followed by Phase 2 (full history).
@@ -331,10 +361,16 @@ pub fn scan(history_days: i64) -> Vec<SessionInfo> {
             // Backfill usage from the project's JSONL if it exists.
             let project_dir = claude.join("projects").join(project_name_for(&cwd));
             let jsonl_path = project_dir.join(format!("{}.jsonl", session_id));
-            let (usage, model, ai_title, _, _, cost_by_day) = if jsonl_path.exists() {
+            let ParsedSession {
+                usage,
+                model,
+                ai_title,
+                cost_by_day,
+                ..
+            } = if jsonl_path.exists() {
                 parse_usage_with_meta(&jsonl_path)
             } else {
-                (TokenUsage::default(), None, None, None, None, HashMap::new())
+                ParsedSession::default()
             };
 
             let cost = cost_for(&usage, model.as_deref());
@@ -415,8 +451,14 @@ pub fn scan(history_days: i64) -> Vec<SessionInfo> {
                 if seen.contains(&session_id) {
                     continue;
                 }
-                let (usage, model, ai_title, last_mod, cwd_from_jsonl, cost_by_day) =
-                    parse_usage_with_meta(&path);
+                let ParsedSession {
+                    usage,
+                    model,
+                    ai_title,
+                    last_modified: last_mod,
+                    cwd: cwd_from_jsonl,
+                    cost_by_day,
+                } = parse_usage_with_meta(&path);
                 let cwd = cwd_from_jsonl.unwrap_or(cwd_guess.clone());
                 if is_junk_cwd(&cwd) {
                     continue;
@@ -529,6 +571,14 @@ fn scan_codex(
             Some(f) if f.starts_with("rollout-") && f.ends_with(".jsonl") => f,
             _ => continue,
         };
+        // Cheap filename checks before any stat: skip files we can't key or have
+        // already seen.
+        let Some(id) = codex_id_from_filename(fname) else {
+            continue;
+        };
+        if seen.contains(&id) {
+            continue;
+        }
         let attrs = match fs::metadata(path) {
             Ok(a) => a,
             Err(_) => continue,
@@ -543,13 +593,7 @@ fn scan_codex(
         if mtime < horizon {
             continue;
         }
-        let Some(id) = codex_id_from_filename(fname) else {
-            continue;
-        };
-        if seen.contains(&id) {
-            continue;
-        }
-        if let Some(s) = parse_codex_rollout(path, &id, names, mtime) {
+        if let Some(s) = parse_codex_rollout(path, &id, names, &attrs, mtime) {
             if is_junk_cwd(&s.cwd) {
                 continue;
             }
@@ -565,9 +609,9 @@ fn parse_codex_rollout(
     path: &Path,
     id: &str,
     names: &HashMap<String, String>,
+    attrs: &fs::Metadata,
     mtime: DateTime<Local>,
 ) -> Option<SessionInfo> {
-    let attrs = fs::metadata(path).ok()?;
     let fingerprint = format!(
         "codex:{}:{}",
         attrs.len(),
