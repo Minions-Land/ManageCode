@@ -92,7 +92,9 @@ pub(super) fn draw_cost_summary_overlay(f: &mut Frame, area: Rect, app: &App) {
     let mut by_day: HashMap<String, f64> = HashMap::new();
     for s in &app.sessions {
         *by_dir.entry(short_path(&s.cwd)).or_insert(0.0) += s.cost;
-        *by_model.entry(model_short(s.model.as_deref())).or_insert(0.0) += s.cost;
+        *by_model
+            .entry(model_short(s.model.as_deref()))
+            .or_insert(0.0) += s.cost;
         for (day, c) in &s.cost_by_day {
             *by_day.entry(day.clone()).or_insert(0.0) += *c;
         }
@@ -115,8 +117,7 @@ pub(super) fn draw_cost_summary_overlay(f: &mut Frame, area: Rect, app: &App) {
 
     let dirs = top(by_dir, 8);
     let models = top(by_model.into_iter().map(|(k, v)| (k.to_string(), v)), 4);
-    let mut days: Vec<(String, f64)> =
-        by_day.into_iter().filter(|(_, c)| *c > 0.0).collect();
+    let mut days: Vec<(String, f64)> = by_day.into_iter().filter(|(_, c)| *c > 0.0).collect();
     days.sort_by(|a, b| b.0.cmp(&a.0)); // most recent day first
     days.truncate(10);
 
@@ -147,7 +148,10 @@ pub(super) fn draw_cost_summary_overlay(f: &mut Frame, area: Rect, app: &App) {
             ]));
         }
         if rows.is_empty() {
-            lines.push(Line::from(Span::styled("  (none)", Style::default().fg(MUTED))));
+            lines.push(Line::from(Span::styled(
+                "  (none)",
+                Style::default().fg(MUTED),
+            )));
         }
     };
 
@@ -217,11 +221,20 @@ pub(super) fn draw_settings_overlay(f: &mut Frame, area: Rect, app: &App) {
         )),
         Line::raw(""),
         Line::from(vec![
-            Span::styled("⏎", Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "⏎",
+                Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+            ),
             Span::styled(" save   ", Style::default().fg(MUTED)),
-            Span::styled("↑↓/tab", Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "↑↓/tab",
+                Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+            ),
             Span::styled(" field   ", Style::default().fg(MUTED)),
-            Span::styled("esc", Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "esc",
+                Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+            ),
             Span::styled(" cancel", Style::default().fg(MUTED)),
         ]),
     ];
@@ -296,10 +309,7 @@ pub(super) fn draw_confirm_overlay(f: &mut Frame, area: Rect, app: &App) {
             Span::styled(" no", Style::default().fg(MUTED)),
         ]),
     ];
-    f.render_widget(
-        Paragraph::new(lines).alignment(Alignment::Center),
-        inner,
-    );
+    f.render_widget(Paragraph::new(lines).alignment(Alignment::Center), inner);
 }
 
 pub(super) fn draw_launch_overlay(f: &mut Frame, area: Rect, form: &LaunchForm) {
@@ -319,7 +329,10 @@ pub(super) fn draw_launch_overlay(f: &mut Frame, area: Rect, form: &LaunchForm) 
     for i in 0..LaunchForm::FIELD_COUNT {
         let focused = i == form.field;
         let label_style = if focused {
-            Style::default().fg(SEL_FG).bg(ACCENT).add_modifier(Modifier::BOLD)
+            Style::default()
+                .fg(SEL_FG)
+                .bg(ACCENT)
+                .add_modifier(Modifier::BOLD)
         } else {
             Style::default().fg(MUTED)
         };
@@ -373,8 +386,7 @@ pub(super) fn draw_toast(f: &mut Frame, area: Rect, msg: &str) {
     let inner = block.inner(toast);
     f.render_widget(block, toast);
     f.render_widget(
-        Paragraph::new(Span::styled(msg, Style::default().fg(TEXT)))
-            .alignment(Alignment::Center),
+        Paragraph::new(Span::styled(msg, Style::default().fg(TEXT))).alignment(Alignment::Center),
         inner,
     );
 }

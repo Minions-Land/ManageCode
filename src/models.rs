@@ -180,7 +180,10 @@ mod tests {
     #[test]
     fn sonnet_input_output_cost() {
         // 1M input @ $3 + 1M output @ $15 = $18.
-        let c = cost_for(&usage(1_000_000, 1_000_000, 0, 0, 0), Some("claude-sonnet-4-6"));
+        let c = cost_for(
+            &usage(1_000_000, 1_000_000, 0, 0, 0),
+            Some("claude-sonnet-4-6"),
+        );
         assert!((c - 18.0).abs() < 1e-9, "got {c}");
     }
 
@@ -194,13 +197,17 @@ mod tests {
     #[test]
     fn haiku_uses_4_5_not_3_5() {
         // Haiku 4.5 input is $1/M, not the retired 3.5 rate of $0.80/M.
-        assert!((cost_for(&usage(1_000_000, 0, 0, 0, 0), Some("claude-haiku-4-5")) - 1.0).abs() < 1e-9);
+        assert!(
+            (cost_for(&usage(1_000_000, 0, 0, 0, 0), Some("claude-haiku-4-5")) - 1.0).abs() < 1e-9
+        );
     }
 
     #[test]
     fn opus_uses_current_not_4_1() {
         // Current Opus input is $5/M, not the deprecated 4.1 rate of $15/M.
-        assert!((cost_for(&usage(1_000_000, 0, 0, 0, 0), Some("claude-opus-4-8")) - 5.0).abs() < 1e-9);
+        assert!(
+            (cost_for(&usage(1_000_000, 0, 0, 0, 0), Some("claude-opus-4-8")) - 5.0).abs() < 1e-9
+        );
     }
 
     #[test]
@@ -211,7 +218,10 @@ mod tests {
     #[test]
     fn codex_gpt55_priced_with_openai_rates() {
         // gpt-5.5: $5 input + $30 output + $0.50 cached read, no cache-write charge.
-        let c = cost_for(&usage(1_000_000, 1_000_000, 1_000_000, 0, 0), Some("gpt-5.5"));
+        let c = cost_for(
+            &usage(1_000_000, 1_000_000, 1_000_000, 0, 0),
+            Some("gpt-5.5"),
+        );
         assert!((c - 35.5).abs() < 1e-9, "got {c}");
     }
 

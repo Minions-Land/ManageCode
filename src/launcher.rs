@@ -24,7 +24,11 @@ fn find_claude_binary(config_path: &str) -> Option<String> {
         "/usr/local/bin/claude".into(),
     ];
     if let Some(home) = dirs::home_dir() {
-        candidates.push(home.join(".claude/local/bin/claude").to_string_lossy().to_string());
+        candidates.push(
+            home.join(".claude/local/bin/claude")
+                .to_string_lossy()
+                .to_string(),
+        );
         candidates.push(home.join(".local/bin/claude").to_string_lossy().to_string());
     }
     for c in candidates {
@@ -47,8 +51,10 @@ fn find_codex_binary(config_path: &str) -> Option<String> {
             return Some(p);
         }
     }
-    let mut candidates: Vec<String> =
-        vec!["/opt/homebrew/bin/codex".into(), "/usr/local/bin/codex".into()];
+    let mut candidates: Vec<String> = vec![
+        "/opt/homebrew/bin/codex".into(),
+        "/usr/local/bin/codex".into(),
+    ];
     if let Some(home) = dirs::home_dir() {
         candidates.push(home.join(".local/bin/codex").to_string_lossy().to_string());
     }

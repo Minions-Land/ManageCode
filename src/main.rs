@@ -157,7 +157,12 @@ fn run_list(history_days: Option<i64>) -> Result<()> {
             "{} {:<8}  {:>10}  ${:>8.4}  {}  {}",
             mark,
             model,
-            format_count(s.usage.total_input + s.usage.cache_read + s.usage.cache_creation() + s.usage.total_output),
+            format_count(
+                s.usage.total_input
+                    + s.usage.cache_read
+                    + s.usage.cache_creation()
+                    + s.usage.total_output
+            ),
             s.cost,
             truncate_str(&s.name, 30),
             models::short_path(&s.cwd),
@@ -210,7 +215,11 @@ where
     <B as ratatui::backend::Backend>::Error: std::error::Error + Send + Sync + 'static,
 {
     disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen, DisableMouseCapture)?;
+    execute!(
+        terminal.backend_mut(),
+        LeaveAlternateScreen,
+        DisableMouseCapture
+    )?;
     terminal.show_cursor()?;
     Ok(())
 }
@@ -282,5 +291,3 @@ fn service_terminal(app: &mut App, rows: u16, cols: u16) {
         }
     }
 }
-
-

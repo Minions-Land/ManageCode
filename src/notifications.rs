@@ -66,8 +66,7 @@ impl Notifier {
         // Drop entries for sessions no longer present (avoids unbounded growth).
         let alive: std::collections::HashSet<&str> =
             sessions.iter().map(|s| s.id.as_str()).collect();
-        self.last_status
-            .retain(|k, _| alive.contains(k.as_str()));
+        self.last_status.retain(|k, _| alive.contains(k.as_str()));
         self.busy_start.retain(|k, _| alive.contains(k.as_str()));
         self.last_fire.retain(|k, _| alive.contains(k.as_str()));
     }

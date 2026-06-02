@@ -291,7 +291,11 @@ impl LaunchForm {
 }
 
 fn bool_label(b: bool) -> String {
-    if b { "[x]".into() } else { "[ ]".into() }
+    if b {
+        "[x]".into()
+    } else {
+        "[ ]".into()
+    }
 }
 
 #[derive(Clone)]
@@ -378,7 +382,7 @@ pub struct App {
 }
 
 pub enum AiEvent {
-    SearchHit(Option<String>),                    // matched session id
+    SearchHit(Option<String>), // matched session id
     NameSuggestion { session_id: String, name: String },
     AutoNameDone,
 }
@@ -391,9 +395,16 @@ pub enum PendingExec {
         is_alive: bool,
         source: Source,
     },
-    NewClaude { cwd: String },
-    NewShell { cwd: String },
-    Custom { cwd: String, args: Vec<String> },
+    NewClaude {
+        cwd: String,
+    },
+    NewShell {
+        cwd: String,
+    },
+    Custom {
+        cwd: String,
+        args: Vec<String>,
+    },
 }
 
 impl App {
@@ -523,7 +534,8 @@ impl App {
         }
         // Debounced event-driven scan after the last event.
         if let Some(t) = self.dirty_since {
-            if t.elapsed() >= Duration::from_millis(self.config.refresh.debounce_ms) && !self.scanning
+            if t.elapsed() >= Duration::from_millis(self.config.refresh.debounce_ms)
+                && !self.scanning
             {
                 self.kick_scan();
                 self.dirty_since = None;
@@ -538,7 +550,8 @@ impl App {
         }
         // Refresh the set of background tmux sessions.
         if self.tmux_available
-            && self.last_tmux_refresh.elapsed() >= Duration::from_millis(self.config.refresh.tmux_ms)
+            && self.last_tmux_refresh.elapsed()
+                >= Duration::from_millis(self.config.refresh.tmux_ms)
         {
             self.refresh_tmux_backed();
             self.last_tmux_refresh = Instant::now();
@@ -570,8 +583,7 @@ impl App {
                         if let Some(pos) = vis.iter().position(|i| self.sessions[*i].id == id) {
                             self.selected = pos;
                             self.flash("AI: found a match");
-                        } else if let Some(pos_all) =
-                            self.sessions.iter().position(|s| s.id == id)
+                        } else if let Some(pos_all) = self.sessions.iter().position(|s| s.id == id)
                         {
                             // The match might be hidden by filter or collapsed group; expose it.
                             let cwd = self.sessions[pos_all].cwd.clone();
@@ -659,7 +671,10 @@ impl App {
                     None => continue,
                 };
                 if let Some(name) = ai::suggest_name(&snippet, &model, timeout) {
-                    let _ = tx.send(AiEvent::NameSuggestion { session_id: id, name });
+                    let _ = tx.send(AiEvent::NameSuggestion {
+                        session_id: id,
+                        name,
+                    });
                 }
             }
             let _ = tx.send(AiEvent::AutoNameDone);
@@ -766,11 +781,14 @@ impl App {
             for c in cwd.split('/').filter(|c| !c.is_empty()) {
                 path.push('/');
                 path.push_str(c);
-                node = node.children.entry(c.to_string()).or_insert_with(|| TreeNode {
-                    path: path.clone(),
-                    name: c.to_string(),
-                    ..TreeNode::default()
-                });
+                node = node
+                    .children
+                    .entry(c.to_string())
+                    .or_insert_with(|| TreeNode {
+                        path: path.clone(),
+                        name: c.to_string(),
+                        ..TreeNode::default()
+                    });
             }
             node.sessions.push(idx);
         }
@@ -887,13 +905,15 @@ impl App {
             let action = action.clone();
             match action {
                 ConfirmAction::DeleteJunk => {
-                    let (ids, n) = scanner::delete_sessions(&self.sessions, scanner::is_junk_session);
+                    let (ids, n) =
+                        scanner::delete_sessions(&self.sessions, scanner::is_junk_session);
                     self.sessions.retain(|s| !ids.contains(&s.id));
                     self.clamp_selection();
                     self.flash(format!("deleted {} junk session(s)", n));
                 }
                 ConfirmAction::DeleteEmpty => {
-                    let (ids, n) = scanner::delete_sessions(&self.sessions, scanner::is_empty_session);
+                    let (ids, n) =
+                        scanner::delete_sessions(&self.sessions, scanner::is_empty_session);
                     self.sessions.retain(|s| !ids.contains(&s.id));
                     self.clamp_selection();
                     self.flash(format!("deleted {} empty session(s)", n));

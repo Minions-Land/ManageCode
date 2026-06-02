@@ -72,10 +72,7 @@ pub fn suggest_name(snippet: &str, model: &str, timeout_secs: u64) -> Option<Str
         snippet
     );
     let raw = run_haiku(&prompt, model, Duration::from_secs(timeout_secs)).ok()?;
-    let cleaned: String = raw
-        .replace(['"', '\''], "")
-        .trim()
-        .to_string();
+    let cleaned: String = raw.replace(['"', '\''], "").trim().to_string();
     if cleaned.is_empty()
         || cleaned.contains("\n\n")
         || cleaned.chars().count() > 80
@@ -110,9 +107,10 @@ pub fn sample_session_text(sessions_dir: &std::path::Path, session_id: &str) -> 
                     if let Some(s) = msg.get("content").and_then(|c| c.as_str()) {
                         pieces.push(format!("USER: {}", truncate_text(s, 400)));
                     } else if let Some(arr) = msg.get("content").and_then(|c| c.as_array()) {
-                        if let Some(first) = arr.iter().find(|o| {
-                            o.get("type").and_then(|v| v.as_str()) == Some("text")
-                        }) {
+                        if let Some(first) = arr
+                            .iter()
+                            .find(|o| o.get("type").and_then(|v| v.as_str()) == Some("text"))
+                        {
                             if let Some(t) = first.get("text").and_then(|v| v.as_str()) {
                                 pieces.push(format!("USER: {}", truncate_text(t, 400)));
                             }
@@ -122,9 +120,10 @@ pub fn sample_session_text(sessions_dir: &std::path::Path, session_id: &str) -> 
             } else if ty == "assistant" {
                 if let Some(msg) = obj.get("message") {
                     if let Some(arr) = msg.get("content").and_then(|c| c.as_array()) {
-                        if let Some(first) = arr.iter().find(|o| {
-                            o.get("type").and_then(|v| v.as_str()) == Some("text")
-                        }) {
+                        if let Some(first) = arr
+                            .iter()
+                            .find(|o| o.get("type").and_then(|v| v.as_str()) == Some("text"))
+                        {
                             if let Some(t) = first.get("text").and_then(|v| v.as_str()) {
                                 pieces.push(format!("ASSISTANT: {}", truncate_text(t, 400)));
                             }
@@ -150,7 +149,12 @@ fn truncate_text(s: &str, max: usize) -> String {
 
 /// Semantic search across sessions — used as a fallback when literal filter
 /// returns 0 matches. Returns the matched session id (or None).
-pub fn search(query: &str, sessions: &[SessionInfo], model: &str, timeout_secs: u64) -> Option<String> {
+pub fn search(
+    query: &str,
+    sessions: &[SessionInfo],
+    model: &str,
+    timeout_secs: u64,
+) -> Option<String> {
     let mut compact: Vec<Value> = Vec::new();
     for s in sessions.iter().take(60) {
         compact.push(serde_json::json!({

@@ -71,8 +71,7 @@ fn read_claude_transcript(session: &SessionInfo) -> Result<Vec<Msg>> {
         .join("projects")
         .join(project_name_for(&session.cwd))
         .join(format!("{}.jsonl", session.id));
-    let content =
-        fs::read_to_string(&path).map_err(|e| anyhow!("read {}: {e}", path.display()))?;
+    let content = fs::read_to_string(&path).map_err(|e| anyhow!("read {}: {e}", path.display()))?;
     let mut out = Vec::new();
     for line in content.lines() {
         let v: Value = match serde_json::from_str(line) {
@@ -83,7 +82,9 @@ fn read_claude_transcript(session: &SessionInfo) -> Result<Vec<Msg>> {
         if ty != "user" && ty != "assistant" {
             continue;
         }
-        let Some(msg) = v.get("message") else { continue };
+        let Some(msg) = v.get("message") else {
+            continue;
+        };
         let role = msg
             .get("role")
             .and_then(|x| x.as_str())

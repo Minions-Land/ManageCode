@@ -140,7 +140,9 @@ fn parse_usage_with_meta(jsonl_path: &Path) -> ParsedSession {
         Some(t) => format!(
             "{}:{}",
             size,
-            t.duration_since(UNIX_EPOCH).unwrap_or_default().as_secs_f64()
+            t.duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs_f64()
         ),
         None => format!("{}:0", size),
     };
@@ -366,11 +368,7 @@ pub fn scan(opts: &ScanOpts) -> Vec<SessionInfo> {
             let started_at = json
                 .get("startedAt")
                 .and_then(|v| v.as_f64())
-                .and_then(|ms| {
-                    Local
-                        .timestamp_millis_opt(ms as i64)
-                        .single()
-                });
+                .and_then(|ms| Local.timestamp_millis_opt(ms as i64).single());
 
             // Backfill usage from the project's JSONL if it exists.
             let project_dir = claude.join("projects").join(project_name_for(&cwd));
@@ -548,7 +546,11 @@ fn codex_id_from_filename(fname: &str) -> Option<String> {
 /// token-usage object. `output_tokens` already includes reasoning tokens.
 fn codex_triple(v: &Value) -> (u64, u64, u64) {
     let g = |k: &str| v.get(k).and_then(|x| x.as_u64()).unwrap_or(0);
-    (g("input_tokens"), g("cached_input_tokens"), g("output_tokens"))
+    (
+        g("input_tokens"),
+        g("cached_input_tokens"),
+        g("output_tokens"),
+    )
 }
 
 /// Map Codex token totals onto our unified TokenUsage. OpenAI bills the
@@ -709,7 +711,10 @@ fn parse_codex_rollout(
                 }
             }
             "turn_context" => {
-                if let Some(m) = payload.and_then(|p| p.get("model")).and_then(|v| v.as_str()) {
+                if let Some(m) = payload
+                    .and_then(|p| p.get("model"))
+                    .and_then(|v| v.as_str())
+                {
                     model = Some(m.to_string());
                 }
             }

@@ -318,7 +318,9 @@ mod tests {
         assert!(!ks.matches(KeyCode::Char('a'), KeyModifiers::NONE));
         assert_eq!(ks.label(), "Ctrl-A");
 
-        assert!(KeySpec::parse("f12").unwrap().matches(KeyCode::F(12), KeyModifiers::NONE));
+        assert!(KeySpec::parse("f12")
+            .unwrap()
+            .matches(KeyCode::F(12), KeyModifiers::NONE));
         assert!(KeySpec::parse("ctrl-space").is_ok());
         assert!(KeySpec::parse("bogus-x").is_err());
     }

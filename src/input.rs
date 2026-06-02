@@ -10,11 +10,7 @@ use crate::keymap::BrowseAction;
 use crate::launcher;
 use crate::ExitRequest;
 
-pub fn handle_key(
-    app: &mut App,
-    code: KeyCode,
-    mods: KeyModifiers,
-) -> Option<ExitRequest> {
+pub fn handle_key(app: &mut App, code: KeyCode, mods: KeyModifiers) -> Option<ExitRequest> {
     // Terminal mode swallows ALL keys (including Ctrl-C, which must reach the
     // child) except the escape prefix. Checked before the global Ctrl-C quit.
     if matches!(app.mode, Mode::Terminal) {
@@ -101,7 +97,11 @@ pub fn handle_mouse(app: &mut App, me: crossterm::event::MouseEvent) {
         Mode::Terminal => {
             if over_pane {
                 // Wheel scrolls our scrollback unless the child tracks the mouse.
-                let tracking = app.term.as_ref().map(|t| t.mouse_tracking()).unwrap_or(false);
+                let tracking = app
+                    .term
+                    .as_ref()
+                    .map(|t| t.mouse_tracking())
+                    .unwrap_or(false);
                 match me.kind {
                     K::ScrollUp if !tracking => {
                         if let Some(t) = app.term.as_mut() {
@@ -176,7 +176,12 @@ fn handle_list_click(app: &mut App, y: u16) {
                     let source = s.source;
                     launcher::open_terminal_for(
                         app,
-                        PendingExec::Resume { id, cwd, is_alive, source },
+                        PendingExec::Resume {
+                            id,
+                            cwd,
+                            is_alive,
+                            source,
+                        },
                     );
                 }
             } else {
@@ -271,7 +276,15 @@ fn perform_browse(app: &mut App, action: BrowseAction) -> Option<ExitRequest> {
                 let cwd = s.cwd.clone();
                 let is_alive = s.is_alive;
                 let source = s.source;
-                launcher::open_terminal_for(app, PendingExec::Resume { id, cwd, is_alive, source });
+                launcher::open_terminal_for(
+                    app,
+                    PendingExec::Resume {
+                        id,
+                        cwd,
+                        is_alive,
+                        source,
+                    },
+                );
             }
         }
         NewClaude => {
