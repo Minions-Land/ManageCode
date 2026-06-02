@@ -358,6 +358,25 @@ fn perform_browse(app: &mut App, action: BrowseAction) -> Option<ExitRequest> {
         DeleteJunk => app.mode = Mode::Confirm(ConfirmAction::DeleteJunk),
         DeleteEmpty => app.mode = Mode::Confirm(ConfirmAction::DeleteEmpty),
         KillTmux => app.ask_kill_tmux(),
+        Convert => {
+            if let Some(s) = app.selected_session() {
+                let s = s.clone();
+                let other = match s.source {
+                    crate::models::Source::Claude => "codex",
+                    crate::models::Source::Codex => "claude",
+                };
+                match crate::convert::convert_session(&s) {
+                    Ok(p) => {
+                        app.flash(format!(
+                            "converted to {other}: {}",
+                            crate::models::short_path(&p.to_string_lossy())
+                        ));
+                        app.kick_scan();
+                    }
+                    Err(e) => app.flash(format!("convert failed: {e}")),
+                }
+            }
+        }
     }
     None
 }

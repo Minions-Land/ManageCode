@@ -1,6 +1,7 @@
 mod ai;
 mod app;
 mod config;
+mod convert;
 mod input;
 mod keymap;
 mod launcher;

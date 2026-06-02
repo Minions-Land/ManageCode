@@ -40,6 +40,7 @@ pub enum BrowseAction {
     DeleteJunk,
     DeleteEmpty,
     KillTmux,
+    Convert,
 }
 
 impl BrowseAction {
@@ -75,6 +76,7 @@ impl BrowseAction {
             DeleteJunk => "delete_junk",
             DeleteEmpty => "delete_empty",
             KillTmux => "kill_tmux",
+            Convert => "convert",
         }
     }
 
@@ -85,7 +87,7 @@ impl BrowseAction {
             Quit, Up, Down, PageUp, PageDown, Top, Bottom, Open, NewClaude, LaunchForm, NewShell,
             FocusTerminal, Filter, Rename, Refresh, ToggleGroup, CollapseInactive, ExpandAll,
             CycleView, ToggleMute, Help, Settings, CostSummary, AiSearch, AutoName, DeleteJunk,
-            DeleteEmpty, KillTmux,
+            DeleteEmpty, KillTmux, Convert,
         ]
         .into_iter()
         .find(|a| a.name() == s)
@@ -178,6 +180,7 @@ pub const DEFAULT_BINDINGS: &[Binding] = &[
     Binding { action: A::LaunchForm, keys: &[Char('N')], group: Some("session actions"), help_keys: None, help: Some("new claude (with options)"), footer: None, footer_narrow: false },
     Binding { action: A::NewShell, keys: &[Char('s')], group: Some("session actions"), help_keys: None, help: Some("new shell in cwd"), footer: Some(("s", "new shell")), footer_narrow: false },
     Binding { action: A::Rename, keys: &[Char('r')], group: Some("session actions"), help_keys: None, help: Some("rename"), footer: Some(("r", "rename")), footer_narrow: false },
+    Binding { action: A::Convert, keys: &[Char('x')], group: Some("session actions"), help_keys: None, help: Some("convert record to the other tool (Claude↔Codex)"), footer: None, footer_narrow: false },
     Binding { action: A::KillTmux, keys: &[Char('K')], group: Some("tmux multi-session"), help_keys: None, help: Some("kill the background tmux session"), footer: None, footer_narrow: false },
     Binding { action: A::Filter, keys: &[Char('/')], group: Some("search & AI"), help_keys: None, help: Some("literal filter"), footer: Some(("/", "filter")), footer_narrow: true },
     Binding { action: A::AiSearch, keys: &[Char('\\')], group: Some("search & AI"), help_keys: None, help: Some("AI search (Haiku)"), footer: None, footer_narrow: false },
