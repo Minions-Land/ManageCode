@@ -27,14 +27,14 @@ fn find_claude() -> Option<PathBuf> {
     candidates.into_iter().find(|c| c.is_file())
 }
 
-/// One-shot to `claude --print --model haiku`. Writes prompt to stdin, returns
-/// the trimmed stdout. Times out after `timeout`.
-fn run_haiku(prompt: &str, timeout: Duration) -> Result<String> {
+/// One-shot to `claude --print --model <model>`. Writes prompt to stdin,
+/// returns the trimmed stdout. Times out after `timeout`.
+fn run_haiku(prompt: &str, model: &str, timeout: Duration) -> Result<String> {
     let claude = find_claude().ok_or_else(|| anyhow!("claude binary not found"))?;
     let mut child = Command::new(&claude)
         .arg("--print")
         .arg("--model")
-        .arg("haiku")
+        .arg(model)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -65,17 +65,14 @@ fn run_haiku(prompt: &str, timeout: Duration) -> Result<String> {
 }
 
 /// Suggest a 1-5 word session name from a JSONL snippet. Returns None on any failure.
-pub fn suggest_name(snippet: &str) -> Option<String> {
+pub fn suggest_name(snippet: &str, model: &str, timeout_secs: u64) -> Option<String> {
     let prompt = format!(
         "Read this Claude Code session snippet and propose a short session name \
 (max 5 words, no quotes, no period). Capture the topic concretely. Reply with ONLY the name, no prose.\n\n{}",
         snippet
     );
-    let raw = run_haiku(&prompt, Duration::from_secs(45)).ok()?;
-    let cleaned: String = raw
-        .replace(['"', '\''], "")
-        .trim()
-        .to_string();
+    let raw = run_haiku(&prompt, model, Duration::from_secs(timeout_secs)).ok()?;
+    let cleaned: String = raw.replace(['"', '\''], "").trim().to_string();
     if cleaned.is_empty()
         || cleaned.contains("\n\n")
         || cleaned.chars().count() > 80
@@ -110,9 +107,10 @@ pub fn sample_session_text(sessions_dir: &std::path::Path, session_id: &str) -> 
                     if let Some(s) = msg.get("content").and_then(|c| c.as_str()) {
                         pieces.push(format!("USER: {}", truncate_text(s, 400)));
                     } else if let Some(arr) = msg.get("content").and_then(|c| c.as_array()) {
-                        if let Some(first) = arr.iter().find(|o| {
-                            o.get("type").and_then(|v| v.as_str()) == Some("text")
-                        }) {
+                        if let Some(first) = arr
+                            .iter()
+                            .find(|o| o.get("type").and_then(|v| v.as_str()) == Some("text"))
+                        {
                             if let Some(t) = first.get("text").and_then(|v| v.as_str()) {
                                 pieces.push(format!("USER: {}", truncate_text(t, 400)));
                             }
@@ -122,9 +120,10 @@ pub fn sample_session_text(sessions_dir: &std::path::Path, session_id: &str) -> 
             } else if ty == "assistant" {
                 if let Some(msg) = obj.get("message") {
                     if let Some(arr) = msg.get("content").and_then(|c| c.as_array()) {
-                        if let Some(first) = arr.iter().find(|o| {
-                            o.get("type").and_then(|v| v.as_str()) == Some("text")
-                        }) {
+                        if let Some(first) = arr
+                            .iter()
+                            .find(|o| o.get("type").and_then(|v| v.as_str()) == Some("text"))
+                        {
                             if let Some(t) = first.get("text").and_then(|v| v.as_str()) {
                                 pieces.push(format!("ASSISTANT: {}", truncate_text(t, 400)));
                             }
@@ -150,7 +149,12 @@ fn truncate_text(s: &str, max: usize) -> String {
 
 /// Semantic search across sessions — used as a fallback when literal filter
 /// returns 0 matches. Returns the matched session id (or None).
-pub fn search(query: &str, sessions: &[SessionInfo]) -> Option<String> {
+pub fn search(
+    query: &str,
+    sessions: &[SessionInfo],
+    model: &str,
+    timeout_secs: u64,
+) -> Option<String> {
     let mut compact: Vec<Value> = Vec::new();
     for s in sessions.iter().take(60) {
         compact.push(serde_json::json!({
@@ -171,7 +175,7 @@ If nothing matches, reply: {{\"id\":null,\"reason\":\"<short explanation>\"}}\n\
 Query: {}\n\nSessions:\n{}",
         query, sessions_json
     );
-    let raw = run_haiku(&prompt, Duration::from_secs(30)).ok()?;
+    let raw = run_haiku(&prompt, model, Duration::from_secs(timeout_secs)).ok()?;
     let cleaned = raw.replace("```json", "").replace("```", "");
     let start = cleaned.find('{')?;
     let end = cleaned.rfind('}')?;

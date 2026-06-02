@@ -116,6 +116,7 @@ pub fn draw(f: &mut Frame, app: &App) {
         Mode::Launch(form) => draw_launch_overlay(f, area, form),
         Mode::Settings => draw_settings_overlay(f, area, app),
         Mode::CostSummary => draw_cost_summary_overlay(f, area, app),
+        Mode::MigrateMemory => draw_migrate_overlay(f, area, app),
         Mode::Browse => {}
         // Handled inline by the sidebar+terminal layout; no modal overlay.
         Mode::Terminal => {}
@@ -217,10 +218,7 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App, tier: Layoutness) {
             Span::raw("  "),
         ];
         if !busy_label.is_empty() {
-            spans.push(Span::styled(
-                busy_label.clone(),
-                Style::default().fg(WARN),
-            ));
+            spans.push(Span::styled(busy_label.clone(), Style::default().fg(WARN)));
             spans.push(sep(MUTED));
         }
         spans.push(Span::styled(
@@ -270,7 +268,10 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App, tier: Layoutness) {
                 }
                 _ => (format!("today ${:.2}", today), LIVE),
             };
-            spans.push(Span::styled(txt, Style::default().fg(color).add_modifier(Modifier::BOLD)));
+            spans.push(Span::styled(
+                txt,
+                Style::default().fg(color).add_modifier(Modifier::BOLD),
+            ));
         }
         if !app.notifier.enabled {
             spans.push(sep(MUTED));
@@ -330,7 +331,11 @@ fn draw_session_list(f: &mut Frame, area: Rect, app: &App, tier: Layoutness) {
     if avail == 0 {
         return;
     }
-    let session_height: usize = if matches!(tier, Layoutness::Narrow) { 1 } else { 2 };
+    let session_height: usize = if matches!(tier, Layoutness::Narrow) {
+        1
+    } else {
+        2
+    };
 
     // Walk rows once to compute heights, then pick a viewport that keeps the
     // currently selected session row in view.
@@ -394,7 +399,12 @@ fn draw_session_list(f: &mut Frame, area: Rect, app: &App, tier: Layoutness) {
         }
 
         match row {
-            Row::Header { cwd, total, alive, collapsed } => {
+            Row::Header {
+                cwd,
+                total,
+                alive,
+                collapsed,
+            } => {
                 app.list_hits
                     .borrow_mut()
                     .push((y, 1, RowHit::Header(cwd.clone())));
@@ -412,7 +422,14 @@ fn draw_session_list(f: &mut Frame, area: Rect, app: &App, tier: Layoutness) {
                     *collapsed,
                 );
             }
-            Row::Tree { path, name, depth, total, alive, collapsed } => {
+            Row::Tree {
+                path,
+                name,
+                depth,
+                total,
+                alive,
+                collapsed,
+            } => {
                 app.list_hits
                     .borrow_mut()
                     .push((y, 1, RowHit::Header(path.clone())));
@@ -457,16 +474,21 @@ fn draw_session_list(f: &mut Frame, area: Rect, app: &App, tier: Layoutness) {
     }
 }
 
-fn draw_group_header(f: &mut Frame, area: Rect, cwd: &str, total: usize, alive: usize, collapsed: bool) {
+fn draw_group_header(
+    f: &mut Frame,
+    area: Rect,
+    cwd: &str,
+    total: usize,
+    alive: usize,
+    collapsed: bool,
+) {
     let chevron = if collapsed { "▸" } else { "▾" };
     let name = short_path(cwd);
     let mut spans: Vec<Span> = vec![
         Span::styled(format!(" {} ", chevron), Style::default().fg(ACCENT_DIM)),
         Span::styled(
             truncate(&name, (area.width as usize).saturating_sub(18)),
-            Style::default()
-                .fg(ACCENT)
-                .add_modifier(Modifier::BOLD),
+            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
         ),
         Span::raw("  "),
     ];
@@ -507,10 +529,16 @@ fn draw_tree_row(
         Span::raw("  "),
     ];
     if alive > 0 {
-        spans.push(Span::styled(format!("●{}", alive), Style::default().fg(LIVE)));
+        spans.push(Span::styled(
+            format!("●{}", alive),
+            Style::default().fg(LIVE),
+        ));
         spans.push(Span::raw(" "));
     }
-    spans.push(Span::styled(format!("{}", total), Style::default().fg(MUTED)));
+    spans.push(Span::styled(
+        format!("{}", total),
+        Style::default().fg(MUTED),
+    ));
     f.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
@@ -570,7 +598,11 @@ fn draw_session_row(
     let model_str = format!(" {} ", model_label);
 
     // Indent under group header for visual hierarchy.
-    let indent = if tier == Layoutness::Narrow { "  " } else { "   " };
+    let indent = if tier == Layoutness::Narrow {
+        "  "
+    } else {
+        "   "
+    };
     let name_width = (area.width as i32)
         - indent.len() as i32
         - 4
@@ -660,14 +692,12 @@ fn draw_detail(f: &mut Frame, area: Rect, app: &App, tier: Layoutness) {
 
     let mut lines: Vec<Line> = Vec::new();
     let title_color = if session.is_alive { LIVE } else { ACCENT };
-    lines.push(Line::from(vec![
-        Span::styled(
-            session.name.clone(),
-            Style::default()
-                .fg(title_color)
-                .add_modifier(Modifier::BOLD),
-        ),
-    ]));
+    lines.push(Line::from(vec![Span::styled(
+        session.name.clone(),
+        Style::default()
+            .fg(title_color)
+            .add_modifier(Modifier::BOLD),
+    )]));
     lines.push(Line::from(vec![Span::styled(
         short_path(&session.cwd),
         Style::default().fg(MUTED),
@@ -900,10 +930,16 @@ fn draw_terminal_footer(f: &mut Frame, area: Rect, app: &App) {
         .style(Style::default().bg(BG));
     f.render_widget(block, area);
     let line = Line::from(vec![
-        Span::styled(prefix, Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            prefix,
+            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+        ),
         Span::styled(" focus list", Style::default().fg(MUTED)),
         sep(ACCENT_DIM),
-        Span::styled("keys", Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            "keys",
+            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+        ),
         Span::styled(" → terminal", Style::default().fg(MUTED)),
     ]);
     f.render_widget(
@@ -935,8 +971,17 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App, tier: Layoutness) {
         Mode::Browse => app.keymap.footer_hints(narrow),
         Mode::Filter => owned(vec![("⏎", "apply"), ("\\", "AI search"), ("esc", "cancel")]),
         Mode::Rename => owned(vec![("⏎", "save"), ("esc", "cancel")]),
+        Mode::MigrateMemory => owned(vec![
+            ("⏎", "migrate"),
+            ("←→", "recent dir"),
+            ("esc", "cancel"),
+        ]),
         Mode::Help | Mode::Confirm(_) => owned(vec![("esc", "close")]),
-        Mode::Launch(_) => owned(vec![("⏎", "launch"), ("space", "toggle"), ("esc", "cancel")]),
+        Mode::Launch(_) => owned(vec![
+            ("⏎", "launch"),
+            ("space", "toggle"),
+            ("esc", "cancel"),
+        ]),
         Mode::Settings => owned(vec![("⏎", "save"), ("esc", "cancel")]),
         Mode::CostSummary => owned(vec![("esc", "close")]),
         // Terminal footer is drawn separately (shows the configured prefix).
@@ -975,10 +1020,7 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App, tier: Layoutness) {
                     Style::default().fg(ACCENT).bold(),
                 ),
                 Span::raw("  "),
-                Span::styled(
-                    fmt_usd(s.cost),
-                    Style::default().fg(TEXT),
-                ),
+                Span::styled(fmt_usd(s.cost), Style::default().fg(TEXT)),
                 sep(ACCENT_DIM),
                 Span::styled(
                     truncate(&short_path(&s.cwd), area.width.saturating_sub(20) as usize),

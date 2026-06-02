@@ -1,27 +1,43 @@
 # ManageCode
 
-> A terminal dashboard for managing every Claude Code session on your machine.
+> **The unified dashboard for your AI coding agents.** One panel to manage every
+> Claude Code and Codex session on your machine — see global run state at a
+> glance, and move records and memory between tools and directories.
 
 **English** · [简体中文](README.zh-CN.md)
 
 ```
-┌─ ManageCode ──── 49 sessions · 1 active · ▶ 2 tmux · $2916.45 total ──────┐
+┌─ ManageCode ── 49 sessions · 1 active · ▶ 2 tmux · ▷ 3 codex · $2916.45 ──┐
 │ ▾ ~/Project/05_2026/MinionsCode                                ▶1  ●1   3  │
 │    ▶ tmux busy   rust-tui notify integration   sonnet-4.6  $  2.41   2m   │
 │    ● idle        refresh strategy notes         opus       $  0.47  14h   │
 │ ▾ ~/Project/03_2026/Forecasting_Reasoning                              5  │
-│    ▶ tmux idle   Q4 forecasting backtest        opus       $  0.75   3d   │
-│    ○                清理 Zone 的无用 file        opus       $  0.12  17d   │
+│    ○ ended       backtest harness               gpt-5.5    $  3.10   3d   │
+│    ○             清理 Zone 的无用 file           opus       $  0.12  17d   │
 └────────────────────────────────────────────────────────────────────────────┘
 ```
 
-One binary. Pick a session, press `Enter`, and it opens **right inside the
-dashboard** — the list shrinks to a sidebar and a live terminal runs `claude`
-next to it. Press `Ctrl-a` to hop back to the sidebar (the session keeps
-running), pick another one, jump back in later — all in a single window, no
-full-screen takeover.
+## Why ManageCode
 
----
+The Vibe Coding era runs on agents — Claude Code, Codex, and more. People keep
+**dozens** of agent processes alive at once, and today the only "manager" is a
+wall of `tmux` panes with no global picture.
+
+ManageCode is the missing layer:
+
+1. **One platform for every agent.** Claude Code *and* Codex sessions in a single
+   list — live status, cost, model, working directory — instead of scattered,
+   disconnected tools.
+2. **Global situational awareness.** Watch the run state of all your agents on one
+   panel: which are busy, which are idle and waiting for you, what each is
+   spending. Press `Enter` and the session opens *inside* the dashboard.
+3. **Records and memory that move with you.** Agents are usually tied to one
+   directory — rename or relocate it and you lose the memory (`CLAUDE.md` /
+   `AGENTS.md`). ManageCode migrates memory across directories *and* across
+   tools, and converts a session record between Claude and Codex formats.
+
+Written in **Rust**, configured with **TOML**, terminal-native performance, a
+modern TUI — one static binary, no runtime.
 
 ## Install
 
@@ -29,20 +45,15 @@ full-screen takeover.
 curl -fsSL https://raw.githubusercontent.com/Minions-Land/ManageCode/main/install.sh | bash
 ```
 
-That's it. The script downloads the prebuilt binary for your platform and
-installs it to `~/.local/bin/managecode`. No Rust toolchain required.
+The script downloads the prebuilt binary for your platform and installs it to
+`~/.local/bin/managecode`. No Rust toolchain required.
 
 **Supported:** Linux x86_64, macOS Apple Silicon (M1 and newer).
 **Intel Mac / Windows:** [build from source](#build-from-source) (Windows needs WSL).
 
-Tip: if `~/.local/bin` isn't on your `$PATH`, the installer tells you what
-to add to your shell rc.
-
-To update later, just run `managecode --update` (or re-run the install
-command) — both pull the latest release via the install script. ManageCode
-also checks for a newer release on startup and shows an `⬆` hint in the
-header when one is available; silence it with `--no-update-check` or
-`MANAGECODE_NO_UPDATE_CHECK=1`.
+Update later with `managecode --update` (or re-run the install command).
+ManageCode also checks for a newer release on startup and shows an `⬆` hint;
+silence it with `--no-update-check` or `update_check = false` in the config.
 
 ## First run
 
@@ -50,201 +61,47 @@ header when one is available; silence it with `--no-update-check` or
 managecode
 ```
 
-You'll see every session on this machine — currently alive at the top,
-recent below, then everything else from the last 30 days. Press `?` any
-time for the full keymap.
+Every session on this machine appears — live at the top, recent below, then the
+rest of the last 30 days. Pick one, press `Enter`, and it opens **right inside
+the dashboard**: the list shrinks to a sidebar and a live terminal runs the
+agent next to it. `Ctrl-a` hops back to the sidebar (the session keeps running),
+pick another, jump back in later — all in one window.
 
-The basics (vim-style):
-
-| Key | What happens |
-|-----|--------------|
-| `↑` / `↓` or `j` / `k` | move the selection |
-| `Enter` | resume the highlighted session in the embedded terminal |
-| `i` / `l` | jump focus into the terminal pane |
-| `Ctrl-a` | from the terminal, return focus to the sidebar (configurable) |
-| `n` | start a fresh `claude` in that session's directory |
-| `s` | drop into a shell in that directory |
-| `/` | filter by name / path; `Enter` falls back to AI search if nothing matches |
-| `:` | settings (change the terminal escape prefix) |
-| `q` | quit |
-
-The mouse works too: click / drag / scroll inside the terminal pane is
-forwarded to `claude` (or tmux); in the sidebar the wheel moves the selection
-and a click on the pane focuses it.
-
-## Multi-session, made simple
-
-If you have `tmux` installed (Homebrew: `brew install tmux`, apt:
-`sudo apt install tmux`), ManageCode automatically wraps every session
-in a managed background process. The terminal pane attaches to it, so:
-
-1. `Enter` on session A → talk for a while → `Ctrl-a` back to the sidebar
-2. Session A stays marked `▶` (running in the background).
-3. `Enter` on session B → talk to a different model in a different repo
-   → `Ctrl-a` again.
-4. Both are running. `Enter` on A re-attaches *exactly* where you left
-   off. Switch back and forth all day — never leaving the dashboard.
-
-To force-end a backgrounded session: select it, press `K`, confirm.
-
-When you quit ManageCode it tidies up after itself: every `mc-*` tmux
-session it spun up this run is killed on exit. Set
-`"cleanup_tmux_on_exit": false` in `~/.managecode/config.json` to leave them
-running in the background instead. You can also opt out of tmux entirely with
-`"prefer_tmux": false` (always run directly in the embedded PTY).
-
-Without `tmux`, ManageCode still works — the embedded terminal just runs
-claude directly, but launches don't persist when you switch away. Install
-tmux (`brew install tmux` / `sudo apt install tmux`) for the
-switch-back-and-forth experience; ManageCode reminds you at startup if it's
-missing. Exit claude the normal way (`/exit`, `Ctrl-D`) and the pane closes
-back to the dashboard.
+Press `?` any time for the full, always-up-to-date keymap.
 
 ## Highlights
 
-- **Terminal-native colors.** The dashboard inherits your terminal's
-  background and theme — no hardcoded scheme, and no seam against the
-  embedded terminal pane. Status is still color-coded per session
-  (idle / busy / thinking / `▶` backgrounded) using your terminal's palette.
-  Updates show up in well under a second.
-- **Cost at a glance.** Per-session token usage and dollar cost, plus a
-  daily total in the header. Set a daily budget (`:`) to get an alert and a
-  red header when today's spend crosses it; press `c` for a cost summary
-  broken down by directory, model, and day.
-- **Mouse-friendly.** Click a row to select it, double-click to open it,
-  click a group header to fold it, and scroll the wheel to navigate. Inside
-  the terminal pane the wheel scrolls scrollback, and clicks/drags pass
-  through to `claude` or tmux when they ask for them.
-- **Codex too.** OpenAI Codex sessions (`~/.codex/sessions/`) show up in
-  the same list alongside Claude, priced with OpenAI rates; `Enter` resumes
-  one with `codex resume <id>`.
-- **Group, tree, or flat.** Working on multiple repos? `T` cycles the
-  sidebar between grouped-by-`cwd`, a path-compressed directory **tree**, and
-  a flat list; collapse any directory with `space` or a click.
-- **AI search.** `/` is a normal substring filter; if nothing matches,
-  `Enter` falls back to a Haiku call that searches across session
-  content. `\` forces AI search directly.
-- **Auto-naming.** `A` asks Haiku to give your unnamed sessions short,
-  meaningful titles based on what was discussed.
-- **Notifications.** When a backgrounded `busy` session goes back to
-  `idle` (i.e., Claude is waiting for you), you get a desktop banner.
-  Mute with `M`.
-- **Launch options.** `N` opens a form to start `claude` with
-  `--model`, `--dangerously-skip-permissions`, `--sandbox`, `--verbose`,
-  `--add-dir` toggles.
+- **Multi-agent, one list.** Claude Code (`~/.claude`) and OpenAI Codex
+  (`~/.codex`) sessions side by side, each priced with the right rates.
+- **Persistent multi-session.** With `tmux`, launches run in detached background
+  sessions you can switch in and out of all day — see
+  [tmux-and-pty.md](docs/tmux-and-pty.md).
+- **Group, tree, or flat.** `T` cycles the sidebar between grouped-by-`cwd`, a
+  path-compressed **directory tree**, and a flat list.
+- **Cost at a glance.** Per-session token usage and dollar cost, a daily total,
+  a budget alert (`:`), and a `c` cost summary by directory / model / day.
+- **Interop.** `x` converts a record to the other tool's format; `X` migrates a
+  directory's memory (`CLAUDE.md` / `AGENTS.md`) to any other directory.
+- **AI search & auto-naming.** `/` filters; if nothing matches, `Enter` runs a
+  model search. `A` names unnamed sessions. Model is configurable.
+- **Mouse-friendly, terminal-native colors**, desktop notifications when a busy
+  session goes idle, and a fully **remappable keymap**.
 
-## Keys reference
+## Documentation
 
-**Navigation**
-
-| Key | Action |
-|-----|--------|
-| `↑` `↓` / `j` `k` | move |
-| `g` / `G` | first / last |
-| `space` / `tab` | collapse / expand the current group |
-| `o` / `O` | collapse inactive / expand all groups |
-| `T` | cycle sidebar view: grouped → directory tree → flat |
-
-**Sessions & terminal**
-
-| Key | Action |
-|-----|--------|
-| `Enter` | resume / re-attach in the embedded terminal |
-| `i` / `l` | focus the terminal pane |
-| `Ctrl-a` | from the terminal, return focus to the sidebar (configurable) |
-| `n` | new `claude` in that cwd (defaults) |
-| `N` | new `claude` with options form (editable cwd + recent-dir quick-pick) |
-| `s` | new shell in that cwd |
-| `r` | rename |
-| `K` | kill the background tmux session for this row |
-
-**Cost & settings**
-
-| Key | Action |
-|-----|--------|
-| `c` | cost summary (by directory / model / day) |
-| `:` | settings — terminal escape prefix and a daily budget alert |
-
-**Search**
-
-| Key | Action |
-|-----|--------|
-| `/` | literal filter |
-| `\` | force AI search |
-| `A` | auto-name unnamed sessions |
-
-**Maintenance**
-
-| Key | Action |
-|-----|--------|
-| `D` | delete junk sessions (tmp / empty) |
-| `E` | delete sessions with no messages |
-| `M` | toggle notifications |
-| `R` | refresh now |
-| `?` | this help |
-| `q` / `Ctrl-C` | quit |
-
-## FAQ
-
-**Where does it find sessions?** It reads `~/.claude/sessions/` (live
-PIDs) and `~/.claude/projects/<cwd>/*.jsonl` (conversation history) —
-the same files Claude Code itself writes. It also reads OpenAI Codex
-sessions from `~/.codex/sessions/**/rollout-*.jsonl` and shows them in
-the same list (marked `▷ N codex` in the header); `Enter` resumes a Codex
-session with `codex resume <id>`.
-
-**Will it slow my machine down?** No. It uses a file watcher
-(inotify / FSEvents) and only re-reads files that actually changed.
-The CPU footprint when idle is essentially zero.
-
-**Does it talk to any servers?** Only when you press `\` or `A`, which
-invoke `claude --print --model haiku` locally — and only Anthropic's
-API sees those queries. The dashboard itself is entirely local.
-
-**Can I point it at a different `claude` binary?** Yes:
-`CLAUDE_BIN=/path/to/claude managecode`. It also auto-discovers
-`/opt/homebrew/bin/claude`, `/usr/local/bin/claude`,
-`~/.claude/local/bin/claude`, `~/.local/bin/claude`, and `$PATH`.
-
-**How do I uninstall?** `rm ~/.local/bin/managecode`. That's all.
-
-## Configuration knobs
-
-```bash
-managecode --days 7        # only look back 7 days (default 30)
-managecode --list          # print sessions to stdout, no TUI
-managecode --version
-INSTALL_DIR=/usr/local/bin VERSION=v0.2.0 bash install.sh
-CLAUDE_BIN=/opt/homebrew/bin/claude managecode
-CODEX_BIN=/opt/homebrew/bin/codex managecode
-```
-
-`~/.managecode/config.json` (all optional):
-
-```jsonc
-{
-  "escape_prefix": "ctrl-a",     // terminal → sidebar focus key
-  "daily_budget_usd": 25.0,      // header alert when today's spend crosses it
-  "prefer_tmux": true,           // false → always use the plain PTY path
-  "cleanup_tmux_on_exit": true,  // false → leave mc-* sessions running on quit
-  "keys": { "quit": "x" }        // remap any Browse action (see ? for names)
-}
-```
-
-Persistent state lives under `~/.managecode/`: custom session names in
-`session-names.json` and the config above. ManageCode writes nothing else.
+- [Keybindings](docs/keybindings.md) — every key, and how to remap them
+- [Configuration](docs/config.md) — the `~/.managecode/config.toml` reference
+- [tmux vs. PTY](docs/tmux-and-pty.md) — how launches run and persist
 
 ## Build from source
 
 ```bash
 git clone https://github.com/Minions-Land/ManageCode.git
 cd ManageCode
-./build.sh
+./build.sh        # or: cargo build --release
 ```
 
-Requires Rust 1.74+. The build script compiles a release binary and
-installs it to `~/.local/bin/managecode` (override with
-`PREFIX=/usr/local`).
+Requires a recent stable Rust toolchain. The binary lands in `target/release/managecode`.
 
 ## License
 

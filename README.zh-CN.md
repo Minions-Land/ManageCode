@@ -1,25 +1,37 @@
 # ManageCode
 
-> 在终端里管理你机器上所有 Claude Code 会话的看板工具。
+> **统一管理你的 AI 编程 Agent 的面板。** 一块面板集中管理本机所有 Claude Code 与
+> Codex 会话——一屏掌握全局运行状态，并在不同工具、不同目录之间迁移记录与 Memory。
 
 [English](README.md) · **简体中文**
 
 ```
-┌─ ManageCode ──── 49 sessions · 1 active · ▶ 2 tmux · $2916.45 total ──────┐
+┌─ ManageCode ── 49 sessions · 1 active · ▶ 2 tmux · ▷ 3 codex · $2916.45 ──┐
 │ ▾ ~/Project/05_2026/MinionsCode                                ▶1  ●1   3  │
 │    ▶ tmux busy   rust-tui notify integration   sonnet-4.6  $  2.41   2m   │
 │    ● idle        refresh strategy notes         opus       $  0.47  14h   │
 │ ▾ ~/Project/03_2026/Forecasting_Reasoning                              5  │
-│    ▶ tmux idle   Q4 forecasting backtest        opus       $  0.75   3d   │
-│    ○                清理 Zone 的无用 file        opus       $  0.12  17d   │
+│    ○ ended       backtest harness               gpt-5.5    $  3.10   3d   │
+│    ○             清理 Zone 的无用 file           opus       $  0.12  17d   │
 └────────────────────────────────────────────────────────────────────────────┘
 ```
 
-一个 Rust 单文件。选中一行按 `Enter` 直接进入 `claude --resume`；按
-`Ctrl-b d` 让它在后台继续跑，回到看板再选下一个，需要的时候再回来——
-全程不用打开任何新窗口。
+## 为什么需要 ManageCode
 
----
+Vibe Coding 时代由 Agent 驱动——Claude Code、Codex 等等。人们常常**同时**开着几十个
+Agent 进程，而目前唯一的「管理方式」只是一墙的 `tmux` pane，毫无全局视图。
+
+ManageCode 正是缺失的那一层：
+
+1. **一个平台管所有 Agent。** Claude Code 与 Codex 会话同列一表——运行状态、花费、模型、
+   工作目录一目了然，告别零散、互不关联的工具。
+2. **全局态势感知。** 在一块面板上掌握所有 Agent 的运行状态：谁在忙、谁空闲在等你、各自花了
+   多少钱。按 `Enter`，会话就在面板内打开。
+3. **随你迁移的记录与 Memory。** Agent 通常绑死在某个目录——目录改名或搬迁，Memory
+   （`CLAUDE.md` / `AGENTS.md`）就丢了。ManageCode 支持 Memory 跨目录、跨工具迁移，并能在
+   Claude 与 Codex 之间互转会话记录。
+
+**Rust** 编写、**TOML** 配置，原生终端性能、现代化 TUI——单个静态二进制，无运行时依赖。
 
 ## 安装
 
@@ -27,158 +39,57 @@
 curl -fsSL https://raw.githubusercontent.com/Minions-Land/ManageCode/main/install.sh | bash
 ```
 
-就这一行。脚本会自动检测平台，从 GitHub Releases 下对应的预编译二进制，
-装到 `~/.local/bin/managecode`。**不需要 Rust 工具链**。
+脚本会下载对应平台的预编译二进制并安装到 `~/.local/bin/managecode`，无需 Rust 工具链。
 
-**支持的平台**：Linux x86_64、macOS Apple Silicon（M1 及以上）。
-**Intel Mac / Windows**：[从源码编译](#从源码构建)（Windows 需要在 WSL 里编）。
+**已支持：** Linux x86_64、macOS Apple Silicon（M1 及更新）。
+**Intel Mac / Windows：** 请[从源码构建](#从源码构建)（Windows 需 WSL）。
 
-如果 `~/.local/bin` 不在你的 `$PATH` 里，安装脚本会告诉你怎么加。
+之后用 `managecode --update`（或重跑安装命令）即可更新。ManageCode 启动时也会检查新版本并在
+顶栏显示 `⬆` 提示；可用 `--no-update-check` 或配置 `update_check = false` 关闭。
 
-后续更新：再跑一遍上面的命令就行，它永远拿最新的 release。
-
-## 第一次使用
+## 首次运行
 
 ```bash
 managecode
 ```
 
-打开后你会看到这台机器上所有的 session——当前活跃的在最上面，最近用过
-的在中间，30 天内的历史会话在下面。任何时候按 `?` 看完整快捷键。
+本机所有会话都会列出——活跃的在最上，最近的在下，再往下是最近 30 天的其余会话。选中一个按
+`Enter`，它就**在面板内打开**：列表收窄成侧边栏，右侧一个实时终端运行该 Agent。`Ctrl-a`
+切回侧边栏（会话继续运行），换一个、稍后再回来——全程一个窗口。
 
-最基本的几个键：
+任何时候按 `?` 查看完整、始终与实际绑定同步的快捷键表。
 
-| 键 | 作用 |
-|---|---|
-| `↑` / `↓` | 移动选中 |
-| `Enter` | 恢复当前选中的 session |
-| `n` | 在当前 cwd 里开一个新的 `claude` |
-| `s` | 在当前 cwd 里开个 shell |
-| `/` | 按名字 / 路径过滤；找不到时按 `Enter` 会回退到 AI 搜索 |
-| `q` | 退出 |
+## 亮点
 
-## 多会话——靠 tmux 实现
+- **多 Agent 同列。** Claude Code（`~/.claude`）与 OpenAI Codex（`~/.codex`）并列展示，各自按
+  正确价格计费。
+- **持续化多会话。** 配合 `tmux`，启动跑在后台 detached 会话里，可整天来回切换——详见
+  [tmux-and-pty.md](docs/tmux-and-pty.md)。
+- **分组 / 树 / 平铺。** `T` 在「按 `cwd` 分组」「路径压缩的**目录树**」「平铺列表」之间循环。
+- **花费一目了然。** 每会话 token 用量与美元花费、当日合计、预算提醒（`:`）、`c` 按目录/模型/
+  天的花费汇总。
+- **互操作。** `x` 把记录转换成另一工具的格式；`X` 把某目录的 Memory（`CLAUDE.md` /
+  `AGENTS.md`）迁移到任意其他目录。
+- **AI 搜索与自动命名。** `/` 过滤；无匹配时 `Enter` 触发模型搜索；`A` 给未命名会话起名。模型
+  可配置。
+- **鼠标友好、终端原生配色**、忙→闲时桌面通知，以及完全**可重映射的快捷键**。
 
-只要你装了 `tmux`（macOS: `brew install tmux`，Ubuntu: `sudo apt install
-tmux`），ManageCode 会自动把每个启动的 session 包到一个后台 tmux 里。
-也就是说：
+## 文档
 
-1. 在 session A 上按 `Enter` → 聊几句 → `Ctrl-b d`
-2. TUI 重新出现。A 这一行变成 `▶`（后台还在跑）
-3. 在 session B 上按 `Enter` → 切到另一个仓库、另一个模型聊 → 再
-   `Ctrl-b d`
-4. 两个都在后台跑。回到 A 按 `Enter` 直接接上原来的状态，**对话历史和
-   位置都不丢**。来回切随便切。
-
-要强制结束某个后台 session：选中它，按 `K`，确认。
-
-**没装 tmux 也能用**，只是回到老的"一次一个" 模式——直接跑 claude，
-正常 `/exit` 或 `Ctrl-D` 退回看板。
-
-## 主要功能
-
-- **实时状态**。每个 session 一种颜色：绿色 = 等输入，琥珀 = 正在跑，
-  紫色 = 在思考，青色 `▶` = 后台 tmux 跑着。变化通常一秒内体现。
-- **一眼看到花了多少钱**。每个 session 的 token 用量 + 美元成本，顶部
-  有当天总和。
-- **按目录分组**。同时开多个项目？每一行都归到自己的 cwd 下，不关心的
-  组按 `space` 折叠掉。
-- **AI 搜索**。`/` 是普通的字串过滤；找不到匹配时，按 `Enter` 会回退到
-  一次 Haiku 调用做语义搜索。按 `\` 强制走 AI 搜索。
-- **自动起名**。按 `A` 让 Haiku 给你那些还没命名的 session 取个有意义
-  的短标题（基于聊天内容）。
-- **完工通知**。后台 session 从 busy 跳回 idle 时（也就是 Claude 在等你
-  回复），桌面会弹通知。按 `M` 静音。
-- **启动选项**。按 `N` 弹一个表单，可以勾选 `--model`、
-  `--dangerously-skip-permissions`、`--sandbox`、`--verbose`、`--add-dir`。
-
-## 快捷键速查
-
-**导航**
-
-| 键 | 作用 |
-|---|---|
-| `↑` `↓` / `j` `k` | 移动 |
-| `g` / `G` | 第一个 / 最后一个 |
-| `space` / `tab` | 折叠 / 展开当前组 |
-| `o` / `O` | 折叠不活跃的 / 展开全部 |
-| `T` | 切换"按目录分组" |
-
-**会话操作**
-
-| 键 | 作用 |
-|---|---|
-| `Enter` | 恢复 / 重新接入选中的 session |
-| `n` | 在 cwd 开新 claude（默认参数） |
-| `N` | 开新 claude（带选项表单） |
-| `s` | 在 cwd 开新 shell |
-| `r` | 重命名 |
-| `K` | 杀掉这一行后台的 tmux session |
-
-**搜索**
-
-| 键 | 作用 |
-|---|---|
-| `/` | 字符串过滤 |
-| `\` | 强制 AI 搜索 |
-| `A` | 自动命名 |
-
-**维护**
-
-| 键 | 作用 |
-|---|---|
-| `D` | 删除垃圾 session（tmp 目录 / 空对话） |
-| `E` | 删除没消息的空 session |
-| `M` | 切换通知 |
-| `R` | 立刻刷新 |
-| `?` | 帮助 |
-| `q` / `Ctrl-C` | 退出 |
-
-## 常见问题
-
-**它从哪里读 session 数据？** 直接读 `~/.claude/sessions/`（活跃 PID）
-和 `~/.claude/projects/<cwd>/*.jsonl`（对话历史）——这都是 Claude Code
-自己写的文件。
-
-**会不会很吃资源？** 不会。用文件监听器（Linux inotify / macOS
-FSEvents），只重读真正变化的文件。空闲时 CPU 接近 0。
-
-**会偷偷发请求给什么服务器吗？** 不会。只有你按 `\` 或 `A` 的时候才会
-调一次 `claude --print --model haiku`——那次请求直接走 Anthropic 官方
-API，跟 Claude Code 一样。看板本身完全在本地。
-
-**能换 `claude` 二进制路径吗？** 能：
-`CLAUDE_BIN=/path/to/claude managecode`。它默认也会在
-`/opt/homebrew/bin/claude`、`/usr/local/bin/claude`、
-`~/.claude/local/bin/claude`、`~/.local/bin/claude`、`$PATH` 里自动找。
-
-**怎么卸载？** `rm ~/.local/bin/managecode`，就这样。
-
-## 配置项
-
-```bash
-managecode --days 7        # 只看最近 7 天（默认 30）
-managecode --list          # 不进 TUI，直接 print 出来
-managecode --version
-INSTALL_DIR=/usr/local/bin VERSION=v0.2.0 bash install.sh
-CLAUDE_BIN=/opt/homebrew/bin/claude managecode
-```
-
-持久化数据：自定义的 session 名字会存到
-`~/.managecode/session-names.json`。这是 ManageCode 唯一写入磁盘的
-文件。
+- [快捷键](docs/keybindings.md) —— 全部按键与如何重映射
+- [配置](docs/config.md) —— `~/.managecode/config.toml` 参考
+- [tmux vs. PTY](docs/tmux-and-pty.md) —— 启动如何运行与持久化
 
 ## 从源码构建
 
 ```bash
 git clone https://github.com/Minions-Land/ManageCode.git
 cd ManageCode
-./build.sh
+./build.sh        # 或：cargo build --release
 ```
 
-需要 Rust 1.74+。脚本会编 release，装到 `~/.local/bin/managecode`
-（用 `PREFIX=/usr/local` 改装到别的地方）。
+需要较新的 stable Rust 工具链。产物在 `target/release/managecode`。
 
-## 许可
+## 许可证
 
-MIT，见 [LICENSE](LICENSE)。
+MIT —— 见 [LICENSE](LICENSE)。

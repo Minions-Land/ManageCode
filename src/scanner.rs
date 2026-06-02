@@ -140,7 +140,9 @@ fn parse_usage_with_meta(jsonl_path: &Path) -> ParsedSession {
         Some(t) => format!(
             "{}:{}",
             size,
-            t.duration_since(UNIX_EPOCH).unwrap_or_default().as_secs_f64()
+            t.duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs_f64()
         ),
         None => format!("{}:0", size),
     };
@@ -291,18 +293,32 @@ fn parse_usage_with_meta(jsonl_path: &Path) -> ParsedSession {
     }
 }
 
-/// Two-phase result: Phase 1 (live + recent) followed by Phase 2 (full history).
-/// We return them merged in a single pass for the TUI; the cache means re-scans
-/// are nearly free.
-pub fn scan(history_days: i64) -> Vec<SessionInfo> {
+/// Options controlling a scan (sources, horizon, size cap).
+pub struct ScanOpts {
+    pub history_days: i64,
+    pub scan_claude: bool,
+    pub scan_codex: bool,
+    pub max_jsonl_bytes: u64,
+}
+
+/// Two-phase result: Phase 1 (live + recent) followed by Phase 2 (full history),
+/// plus Phase 3 (Codex). We return them merged in a single pass for the TUI;
+/// the cache means re-scans are nearly free.
+pub fn scan(opts: &ScanOpts) -> Vec<SessionInfo> {
+    let history_days = opts.history_days;
     let claude = claude_dir();
     let names = load_custom_names();
 
     let mut by_id: HashMap<String, SessionInfo> = HashMap::new();
     let mut seen: HashSet<String> = HashSet::new();
 
-    // Phase 1: live PIDs.
-    let sessions_dir = claude.join("sessions");
+    // Phase 1: live PIDs (Claude only). An empty path when disabled makes the
+    // read_dir below a no-op.
+    let sessions_dir = if opts.scan_claude {
+        claude.join("sessions")
+    } else {
+        PathBuf::new()
+    };
     if let Ok(entries) = fs::read_dir(&sessions_dir) {
         for entry in entries.flatten() {
             let path = entry.path();
@@ -352,11 +368,7 @@ pub fn scan(history_days: i64) -> Vec<SessionInfo> {
             let started_at = json
                 .get("startedAt")
                 .and_then(|v| v.as_f64())
-                .and_then(|ms| {
-                    Local
-                        .timestamp_millis_opt(ms as i64)
-                        .single()
-                });
+                .and_then(|ms| Local.timestamp_millis_opt(ms as i64).single());
 
             // Backfill usage from the project's JSONL if it exists.
             let project_dir = claude.join("projects").join(project_name_for(&cwd));
@@ -403,10 +415,14 @@ pub fn scan(history_days: i64) -> Vec<SessionInfo> {
         }
     }
 
-    // Phase 2: history scan within horizon.
-    let projects_dir = claude.join("projects");
+    // Phase 2: history scan within horizon (Claude only).
+    let projects_dir = if opts.scan_claude {
+        claude.join("projects")
+    } else {
+        PathBuf::new()
+    };
     let horizon = Local::now() - chrono::Duration::days(history_days);
-    let max_bytes: u64 = 100 * 1024 * 1024;
+    let max_bytes: u64 = opts.max_jsonl_bytes;
 
     if let Ok(projects) = fs::read_dir(&projects_dir) {
         for project in projects.flatten() {
@@ -495,7 +511,9 @@ pub fn scan(history_days: i64) -> Vec<SessionInfo> {
 
     // Phase 3: OpenAI Codex sessions (read-only; Codex has no live-PID concept,
     // so these always present as historical and resume via `codex resume <id>`).
-    scan_codex(history_days, &names, &mut by_id, &mut seen);
+    if opts.scan_codex {
+        scan_codex(opts, &names, &mut by_id, &mut seen);
+    }
 
     let mut out: Vec<SessionInfo> = by_id.into_values().collect();
     sort_sessions(&mut out);
@@ -510,7 +528,7 @@ fn project_name_for(cwd: &str) -> String {
 /// Extract the session UUID from a Codex rollout filename, which looks like
 /// `rollout-2026-06-01T22-42-08-019e8635-bb96-7e23-9590-e551cb9e2806.jsonl`.
 /// The UUID is the trailing five dash-separated groups (8-4-4-4-12).
-fn codex_id_from_filename(fname: &str) -> Option<String> {
+pub fn codex_id_from_filename(fname: &str) -> Option<String> {
     let stem = fname.strip_prefix("rollout-")?.strip_suffix(".jsonl")?;
     let parts: Vec<&str> = stem.split('-').collect();
     if parts.len() < 5 {
@@ -528,7 +546,11 @@ fn codex_id_from_filename(fname: &str) -> Option<String> {
 /// token-usage object. `output_tokens` already includes reasoning tokens.
 fn codex_triple(v: &Value) -> (u64, u64, u64) {
     let g = |k: &str| v.get(k).and_then(|x| x.as_u64()).unwrap_or(0);
-    (g("input_tokens"), g("cached_input_tokens"), g("output_tokens"))
+    (
+        g("input_tokens"),
+        g("cached_input_tokens"),
+        g("output_tokens"),
+    )
 }
 
 /// Map Codex token totals onto our unified TokenUsage. OpenAI bills the
@@ -549,7 +571,7 @@ fn codex_usage(input: u64, cached: u64, output: u64, messages: u64) -> TokenUsag
 /// into `by_id`. Honors the same history horizon and size cap as the Claude
 /// history scan.
 fn scan_codex(
-    history_days: i64,
+    opts: &ScanOpts,
     names: &HashMap<String, String>,
     by_id: &mut HashMap<String, SessionInfo>,
     seen: &mut HashSet<String>,
@@ -558,8 +580,8 @@ fn scan_codex(
     if !sessions_dir.is_dir() {
         return;
     }
-    let horizon = Local::now() - chrono::Duration::days(history_days);
-    let max_bytes: u64 = 100 * 1024 * 1024;
+    let horizon = Local::now() - chrono::Duration::days(opts.history_days);
+    let max_bytes: u64 = opts.max_jsonl_bytes;
 
     for entry in walkdir::WalkDir::new(&sessions_dir)
         .max_depth(5)
@@ -689,7 +711,10 @@ fn parse_codex_rollout(
                 }
             }
             "turn_context" => {
-                if let Some(m) = payload.and_then(|p| p.get("model")).and_then(|v| v.as_str()) {
+                if let Some(m) = payload
+                    .and_then(|p| p.get("model"))
+                    .and_then(|v| v.as_str())
+                {
                     model = Some(m.to_string());
                 }
             }

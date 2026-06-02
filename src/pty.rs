@@ -380,8 +380,17 @@ mod tests {
             encode_key(KeyCode::Char('x'), KeyModifiers::NONE),
             Some(vec![b'x'])
         );
-        assert_eq!(encode_key(KeyCode::Enter, KeyModifiers::NONE), Some(vec![b'\r']));
-        assert_eq!(encode_key(KeyCode::Up, KeyModifiers::NONE), Some(b"\x1b[A".to_vec()));
-        assert_eq!(encode_key(KeyCode::Esc, KeyModifiers::NONE), Some(vec![0x1b]));
+        assert_eq!(
+            encode_key(KeyCode::Enter, KeyModifiers::NONE),
+            Some(vec![b'\r'])
+        );
+        assert_eq!(
+            encode_key(KeyCode::Up, KeyModifiers::NONE),
+            Some(b"\x1b[A".to_vec())
+        );
+        assert_eq!(
+            encode_key(KeyCode::Esc, KeyModifiers::NONE),
+            Some(vec![0x1b])
+        );
     }
 }

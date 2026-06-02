@@ -1,9 +1,11 @@
 mod ai;
 mod app;
 mod config;
+mod convert;
 mod input;
 mod keymap;
 mod launcher;
+mod memory;
 mod models;
 mod notifications;
 mod pty;
@@ -34,7 +36,7 @@ fn parse_args() -> Args {
         match arg.as_str() {
             "--days" | "-d" => {
                 if let Some(v) = args.next().and_then(|s| s.parse().ok()) {
-                    a.history_days = v;
+                    a.history_days = Some(v);
                 }
             }
             "--list" | "-l" => {
@@ -60,23 +62,13 @@ fn parse_args() -> Args {
     a
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Default)]
 struct Args {
-    history_days: i64,
+    /// None = use the configured `history_days`; Some = `--days` override.
+    history_days: Option<i64>,
     list_only: bool,
     update: bool,
     no_update_check: bool,
-}
-
-impl Default for Args {
-    fn default() -> Self {
-        Args {
-            history_days: 30,
-            list_only: false,
-            update: false,
-            no_update_check: false,
-        }
-    }
 }
 
 fn print_help() {
@@ -117,9 +109,13 @@ fn main() -> Result<()> {
         return run_list(args.history_days);
     }
     install_panic_hook();
-    // Check for a newer release in the background unless opted out.
-    let check_updates = !args.no_update_check && !update::check_disabled();
-    let mut app = App::new(args.history_days, check_updates);
+    // CLI flags / env can force the update check off; otherwise the config decides.
+    let update_override = if args.no_update_check || update::check_disabled() {
+        Some(false)
+    } else {
+        None
+    };
+    let mut app = App::new(args.history_days, update_override);
 
     enter_tui()?;
     let backend = CrosstermBackend::new(io::stdout());
@@ -137,8 +133,15 @@ pub enum ExitRequest {
     Quit,
 }
 
-fn run_list(history_days: i64) -> Result<()> {
-    let sessions = scanner::scan(history_days);
+fn run_list(history_days: Option<i64>) -> Result<()> {
+    let cfg = config::load();
+    let opts = scanner::ScanOpts {
+        history_days: history_days.unwrap_or(cfg.history_days),
+        scan_claude: cfg.scan_claude,
+        scan_codex: cfg.scan_codex,
+        max_jsonl_bytes: cfg.refresh.max_jsonl_mb * 1024 * 1024,
+    };
+    let sessions = scanner::scan(&opts);
     let total: f64 = sessions.iter().map(|s| s.cost).sum();
     let active = sessions.iter().filter(|s| s.is_alive).count();
     println!(
@@ -154,7 +157,12 @@ fn run_list(history_days: i64) -> Result<()> {
             "{} {:<8}  {:>10}  ${:>8.4}  {}  {}",
             mark,
             model,
-            format_count(s.usage.total_input + s.usage.cache_read + s.usage.cache_creation() + s.usage.total_output),
+            format_count(
+                s.usage.total_input
+                    + s.usage.cache_read
+                    + s.usage.cache_creation()
+                    + s.usage.total_output
+            ),
             s.cost,
             truncate_str(&s.name, 30),
             models::short_path(&s.cwd),
@@ -207,7 +215,11 @@ where
     <B as ratatui::backend::Backend>::Error: std::error::Error + Send + Sync + 'static,
 {
     disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen, DisableMouseCapture)?;
+    execute!(
+        terminal.backend_mut(),
+        LeaveAlternateScreen,
+        DisableMouseCapture
+    )?;
     terminal.show_cursor()?;
     Ok(())
 }
@@ -279,5 +291,3 @@ fn service_terminal(app: &mut App, rows: u16, cols: u16) {
         }
     }
 }
-
-

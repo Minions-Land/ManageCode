@@ -62,6 +62,15 @@ impl ViewMode {
             ViewMode::Flat => "flat list",
         }
     }
+
+    /// Parse a config string ("grouped" | "tree" | "flat"); defaults to Grouped.
+    pub fn from_label(s: &str) -> ViewMode {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "tree" => ViewMode::Tree,
+            "flat" => ViewMode::Flat,
+            _ => ViewMode::Grouped,
+        }
+    }
 }
 
 /// Node in the directory trie used to build the tree view.
@@ -133,6 +142,8 @@ pub enum Mode {
     Settings,
     /// The cost-summary overlay is open.
     CostSummary,
+    /// Choosing a target directory to migrate the selected session's memory to.
+    MigrateMemory,
 }
 
 #[derive(Clone)]
@@ -280,7 +291,11 @@ impl LaunchForm {
 }
 
 fn bool_label(b: bool) -> String {
-    if b { "[x]".into() } else { "[ ]".into() }
+    if b {
+        "[x]".into()
+    } else {
+        "[ ]".into()
+    }
 }
 
 #[derive(Clone)]
@@ -344,6 +359,9 @@ pub struct App {
     pub keymap: crate::keymap::Keymap,
     /// Editing buffer for the settings overlay.
     pub settings_input: String,
+    /// Source dir + target-dir input buffer for the memory-migration overlay.
+    pub migrate_src: String,
+    pub migrate_input: String,
     /// Budget editing buffer for the settings overlay (USD, "" = off).
     pub settings_budget_input: String,
     /// Which settings field is focused (0 = prefix, 1 = daily budget).
@@ -364,7 +382,7 @@ pub struct App {
 }
 
 pub enum AiEvent {
-    SearchHit(Option<String>),                    // matched session id
+    SearchHit(Option<String>), // matched session id
     NameSuggestion { session_id: String, name: String },
     AutoNameDone,
 }
@@ -377,13 +395,29 @@ pub enum PendingExec {
         is_alive: bool,
         source: Source,
     },
-    NewClaude { cwd: String },
-    NewShell { cwd: String },
-    Custom { cwd: String, args: Vec<String> },
+    NewClaude {
+        cwd: String,
+    },
+    NewShell {
+        cwd: String,
+    },
+    Custom {
+        cwd: String,
+        args: Vec<String>,
+    },
 }
 
 impl App {
-    pub fn new(history_days: i64, check_updates: bool) -> Self {
+    /// `history_days` / `update_check` override the config when `Some` (from CLI
+    /// flags); `None` uses the configured value.
+    pub fn new(history_days: Option<i64>, update_check: Option<bool>) -> Self {
+        let config = crate::config::load();
+        let keymap = crate::keymap::Keymap::from_config(&config.keys);
+        let history_days = history_days.unwrap_or(config.history_days);
+        let view = ViewMode::from_label(&config.default_view);
+        let notifications = config.notifications;
+        let check_updates = update_check.unwrap_or(config.update_check);
+
         let (tx, rx) = mpsc::channel();
         let (ai_tx, ai_rx) = mpsc::channel();
         let (watch_tx, watch_rx) = mpsc::channel();
@@ -397,8 +431,6 @@ impl App {
                 }
             });
         }
-        let config = crate::config::load();
-        let keymap = crate::keymap::Keymap::from_config(&config.keys);
         let mut app = App {
             sessions: Vec::new(),
             selected: 0,
@@ -411,12 +443,12 @@ impl App {
             spinner_phase: 0,
             message: None,
             custom_names: scanner::load_custom_names(),
-            view: ViewMode::Grouped,
+            view,
             collapsed_groups: HashSet::new(),
             ai_running: false,
             auto_naming: false,
             auto_name_progress: (0, 0),
-            notifier: Notifier::new(true),
+            notifier: Notifier::new(notifications),
             watcher_active,
             tmux_available: tmux::available(),
             tmux_backed: HashSet::new(),
@@ -428,6 +460,8 @@ impl App {
             config,
             keymap,
             settings_input: String::new(),
+            migrate_src: String::new(),
+            migrate_input: String::new(),
             settings_budget_input: String::new(),
             settings_field: 0,
             budget_alerted: false,
@@ -459,9 +493,14 @@ impl App {
         }
         self.scanning = true;
         let tx = self.tx.clone();
-        let days = self.history_days;
+        let opts = scanner::ScanOpts {
+            history_days: self.history_days,
+            scan_claude: self.config.scan_claude,
+            scan_codex: self.config.scan_codex,
+            max_jsonl_bytes: self.config.refresh.max_jsonl_mb * 1024 * 1024,
+        };
         thread::spawn(move || {
-            let result = scanner::scan(days);
+            let result = scanner::scan(&opts);
             let _ = tx.send(result);
         });
     }
@@ -493,30 +532,39 @@ impl App {
         if got_event {
             self.dirty_since = Some(Instant::now());
         }
-        // Debounced event-driven scan: ~180ms after the last event, kick a scan.
+        // Debounced event-driven scan after the last event.
         if let Some(t) = self.dirty_since {
-            if t.elapsed() >= Duration::from_millis(180) && !self.scanning {
+            if t.elapsed() >= Duration::from_millis(self.config.refresh.debounce_ms)
+                && !self.scanning
+            {
                 self.kick_scan();
                 self.dirty_since = None;
             }
         }
-        // Lightweight PID/status sweep every ~1.5s — picks up busy↔idle quickly
-        // without touching JSONL files.
-        if self.last_live_sweep.elapsed() >= Duration::from_millis(1500) {
+        // Lightweight PID/status sweep — picks up busy↔idle quickly without
+        // touching JSONL files.
+        // `.max(..)` floors guard against a 0 in the config busy-looping the scan.
+        if self.last_live_sweep.elapsed()
+            >= Duration::from_millis(self.config.refresh.live_ms.max(250))
+        {
             scanner::refresh_live_status(&mut self.sessions);
             self.notifier.observe(&self.sessions);
             self.last_live_sweep = Instant::now();
         }
-        // Refresh the set of background tmux sessions every ~2s.
-        if self.tmux_available && self.last_tmux_refresh.elapsed() >= Duration::from_secs(2) {
+        // Refresh the set of background tmux sessions.
+        if self.tmux_available
+            && self.last_tmux_refresh.elapsed()
+                >= Duration::from_millis(self.config.refresh.tmux_ms.max(250))
+        {
             self.refresh_tmux_backed();
             self.last_tmux_refresh = Instant::now();
         }
         // Fallback full scan. Faster when watcher couldn't attach.
+        let full_secs = self.config.refresh.full_secs.max(2);
         let fallback = if self.watcher_active {
-            Duration::from_secs(30)
+            Duration::from_secs(full_secs)
         } else {
-            Duration::from_secs(5)
+            Duration::from_secs(full_secs.min(5))
         };
         if self.last_scan.elapsed() >= fallback && !self.scanning {
             self.kick_scan();
@@ -539,8 +587,7 @@ impl App {
                         if let Some(pos) = vis.iter().position(|i| self.sessions[*i].id == id) {
                             self.selected = pos;
                             self.flash("AI: found a match");
-                        } else if let Some(pos_all) =
-                            self.sessions.iter().position(|s| s.id == id)
+                        } else if let Some(pos_all) = self.sessions.iter().position(|s| s.id == id)
                         {
                             // The match might be hidden by filter or collapsed group; expose it.
                             let cwd = self.sessions[pos_all].cwd.clone();
@@ -581,8 +628,10 @@ impl App {
         self.ai_running = true;
         let tx = self.ai_tx.clone();
         let sessions = self.sessions.clone();
+        let model = self.config.ai_model.clone();
+        let timeout = self.config.ai_timeout_secs;
         std::thread::spawn(move || {
-            let id = ai::search(&query, &sessions);
+            let id = ai::search(&query, &sessions, &model, timeout);
             let _ = tx.send(AiEvent::SearchHit(id));
         });
     }
@@ -617,14 +666,19 @@ impl App {
         self.auto_name_progress = (0, cands.len());
         let tx = self.ai_tx.clone();
         let projects_dir = scanner::claude_dir().join("projects");
+        let model = self.config.ai_model.clone();
+        let timeout = self.config.ai_timeout_secs;
         std::thread::spawn(move || {
             for (id, _) in cands {
                 let snippet = match ai::sample_session_text(&projects_dir, &id) {
                     Some(s) => s,
                     None => continue,
                 };
-                if let Some(name) = ai::suggest_name(&snippet) {
-                    let _ = tx.send(AiEvent::NameSuggestion { session_id: id, name });
+                if let Some(name) = ai::suggest_name(&snippet, &model, timeout) {
+                    let _ = tx.send(AiEvent::NameSuggestion {
+                        session_id: id,
+                        name,
+                    });
                 }
             }
             let _ = tx.send(AiEvent::AutoNameDone);
@@ -731,11 +785,14 @@ impl App {
             for c in cwd.split('/').filter(|c| !c.is_empty()) {
                 path.push('/');
                 path.push_str(c);
-                node = node.children.entry(c.to_string()).or_insert_with(|| TreeNode {
-                    path: path.clone(),
-                    name: c.to_string(),
-                    ..TreeNode::default()
-                });
+                node = node
+                    .children
+                    .entry(c.to_string())
+                    .or_insert_with(|| TreeNode {
+                        path: path.clone(),
+                        name: c.to_string(),
+                        ..TreeNode::default()
+                    });
             }
             node.sessions.push(idx);
         }
@@ -852,13 +909,15 @@ impl App {
             let action = action.clone();
             match action {
                 ConfirmAction::DeleteJunk => {
-                    let (ids, n) = scanner::delete_sessions(&self.sessions, scanner::is_junk_session);
+                    let (ids, n) =
+                        scanner::delete_sessions(&self.sessions, scanner::is_junk_session);
                     self.sessions.retain(|s| !ids.contains(&s.id));
                     self.clamp_selection();
                     self.flash(format!("deleted {} junk session(s)", n));
                 }
                 ConfirmAction::DeleteEmpty => {
-                    let (ids, n) = scanner::delete_sessions(&self.sessions, scanner::is_empty_session);
+                    let (ids, n) =
+                        scanner::delete_sessions(&self.sessions, scanner::is_empty_session);
                     self.sessions.retain(|s| !ids.contains(&s.id));
                     self.clamp_selection();
                     self.flash(format!("deleted {} empty session(s)", n));
@@ -965,6 +1024,24 @@ impl App {
 
     /// Distinct session cwds, most-recently-active first (sessions are already
     /// sorted by recency), for quick selection in the launch form.
+    /// Open the memory-migration overlay for the selected session's directory.
+    pub fn open_migrate(&mut self) {
+        let Some(s) = self.selected_session() else {
+            self.flash("no selection");
+            return;
+        };
+        let src = s.cwd.clone();
+        if !crate::memory::has_memory(&src) {
+            self.flash("no CLAUDE.md / AGENTS.md in this session's directory");
+            return;
+        }
+        self.migrate_src = src;
+        self.migrate_input = dirs::home_dir()
+            .map(|h| h.to_string_lossy().to_string())
+            .unwrap_or_default();
+        self.mode = Mode::MigrateMemory;
+    }
+
     pub fn recent_dirs(&self) -> Vec<String> {
         let mut seen = HashSet::new();
         let mut out = Vec::new();

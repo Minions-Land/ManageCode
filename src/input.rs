@@ -10,11 +10,7 @@ use crate::keymap::BrowseAction;
 use crate::launcher;
 use crate::ExitRequest;
 
-pub fn handle_key(
-    app: &mut App,
-    code: KeyCode,
-    mods: KeyModifiers,
-) -> Option<ExitRequest> {
+pub fn handle_key(app: &mut App, code: KeyCode, mods: KeyModifiers) -> Option<ExitRequest> {
     // Terminal mode swallows ALL keys (including Ctrl-C, which must reach the
     // child) except the escape prefix. Checked before the global Ctrl-C quit.
     if matches!(app.mode, Mode::Terminal) {
@@ -48,6 +44,10 @@ pub fn handle_key(
             None
         }
         Mode::Launch(_) => handle_launch(app, code),
+        Mode::MigrateMemory => {
+            handle_migrate(app, code);
+            None
+        }
         Mode::Settings => {
             handle_settings(app, code);
             None
@@ -97,7 +97,11 @@ pub fn handle_mouse(app: &mut App, me: crossterm::event::MouseEvent) {
         Mode::Terminal => {
             if over_pane {
                 // Wheel scrolls our scrollback unless the child tracks the mouse.
-                let tracking = app.term.as_ref().map(|t| t.mouse_tracking()).unwrap_or(false);
+                let tracking = app
+                    .term
+                    .as_ref()
+                    .map(|t| t.mouse_tracking())
+                    .unwrap_or(false);
                 match me.kind {
                     K::ScrollUp if !tracking => {
                         if let Some(t) = app.term.as_mut() {
@@ -172,7 +176,12 @@ fn handle_list_click(app: &mut App, y: u16) {
                     let source = s.source;
                     launcher::open_terminal_for(
                         app,
-                        PendingExec::Resume { id, cwd, is_alive, source },
+                        PendingExec::Resume {
+                            id,
+                            cwd,
+                            is_alive,
+                            source,
+                        },
                     );
                 }
             } else {
@@ -267,7 +276,15 @@ fn perform_browse(app: &mut App, action: BrowseAction) -> Option<ExitRequest> {
                 let cwd = s.cwd.clone();
                 let is_alive = s.is_alive;
                 let source = s.source;
-                launcher::open_terminal_for(app, PendingExec::Resume { id, cwd, is_alive, source });
+                launcher::open_terminal_for(
+                    app,
+                    PendingExec::Resume {
+                        id,
+                        cwd,
+                        is_alive,
+                        source,
+                    },
+                );
             }
         }
         NewClaude => {
@@ -358,6 +375,26 @@ fn perform_browse(app: &mut App, action: BrowseAction) -> Option<ExitRequest> {
         DeleteJunk => app.mode = Mode::Confirm(ConfirmAction::DeleteJunk),
         DeleteEmpty => app.mode = Mode::Confirm(ConfirmAction::DeleteEmpty),
         KillTmux => app.ask_kill_tmux(),
+        Convert => {
+            if let Some(s) = app.selected_session() {
+                let s = s.clone();
+                let other = match s.source {
+                    crate::models::Source::Claude => "codex",
+                    crate::models::Source::Codex => "claude",
+                };
+                match crate::convert::convert_session(&s) {
+                    Ok(p) => {
+                        app.flash(format!(
+                            "converted to {other}: {}",
+                            crate::models::short_path(&p.to_string_lossy())
+                        ));
+                        app.kick_scan();
+                    }
+                    Err(e) => app.flash(format!("convert failed: {e}")),
+                }
+            }
+        }
+        MigrateMemory => app.open_migrate(),
     }
     None
 }
@@ -408,6 +445,47 @@ fn handle_rename(app: &mut App, code: KeyCode) {
         }
         KeyCode::Char(c) => {
             app.rename_buf.push(c);
+        }
+        _ => {}
+    }
+}
+
+fn handle_migrate(app: &mut App, code: KeyCode) {
+    match code {
+        KeyCode::Esc => {
+            app.migrate_input.clear();
+            app.mode = Mode::Browse;
+        }
+        KeyCode::Enter => {
+            let src = app.migrate_src.clone();
+            let dst = app.migrate_input.trim().to_string();
+            match crate::memory::migrate_memory(&src, &dst) {
+                Ok(n) => app.flash(format!(
+                    "migrated memory → {} ({n} file(s))",
+                    crate::models::short_path(&dst)
+                )),
+                Err(e) => app.flash(format!("migrate failed: {e}")),
+            }
+            app.mode = Mode::Browse;
+        }
+        KeyCode::Backspace => {
+            app.migrate_input.pop();
+        }
+        // Left/Right cycle through recently-seen directories as quick targets.
+        KeyCode::Left | KeyCode::Right => {
+            let dirs = app.recent_dirs();
+            if !dirs.is_empty() {
+                let cur = dirs.iter().position(|d| *d == app.migrate_input);
+                let next = match (cur, code) {
+                    (Some(i), KeyCode::Right) => (i + 1) % dirs.len(),
+                    (Some(i), KeyCode::Left) => (i + dirs.len() - 1) % dirs.len(),
+                    _ => 0,
+                };
+                app.migrate_input = dirs[next].clone();
+            }
+        }
+        KeyCode::Char(c) => {
+            app.migrate_input.push(c);
         }
         _ => {}
     }
