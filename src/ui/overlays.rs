@@ -15,6 +15,17 @@ fn centered(area: Rect, width: u16, height: u16) -> Rect {
     }
 }
 
+/// Standard modal scaffold: clear a centered `w`×`h` rect, draw the titled
+/// panel, and return the inner content area to render into.
+fn modal_frame(f: &mut Frame, area: Rect, title: &str, w: u16, h: u16) -> Rect {
+    let modal = centered(area, w, h);
+    f.render_widget(Clear, modal);
+    let block = panel_block(title, true);
+    let inner = block.inner(modal);
+    f.render_widget(block, modal);
+    inner
+}
+
 pub(super) fn draw_filter_overlay(f: &mut Frame, area: Rect, app: &App) {
     // Inline at top of list — small floating bar.
     let bar = Rect {
@@ -36,11 +47,7 @@ pub(super) fn draw_filter_overlay(f: &mut Frame, area: Rect, app: &App) {
 }
 
 pub(super) fn draw_rename_overlay(f: &mut Frame, area: Rect, app: &App) {
-    let bar = centered(area, 60, 5);
-    f.render_widget(Clear, bar);
-    let block = panel_block("Rename session", true);
-    let inner = block.inner(bar);
-    f.render_widget(block, bar);
+    let inner = modal_frame(f, area, "Rename session", 60, 5);
     let line = Line::from(vec![
         Span::styled("name › ", Style::default().fg(ACCENT)),
         Span::styled(app.rename_buf.clone(), Style::default().fg(TEXT)),
@@ -50,11 +57,7 @@ pub(super) fn draw_rename_overlay(f: &mut Frame, area: Rect, app: &App) {
 }
 
 pub(super) fn draw_migrate_overlay(f: &mut Frame, area: Rect, app: &App) {
-    let modal = centered(area, 70, 7);
-    f.render_widget(Clear, modal);
-    let block = panel_block("Migrate memory", true);
-    let inner = block.inner(modal);
-    f.render_widget(block, modal);
+    let inner = modal_frame(f, area, "Migrate memory", 70, 7);
     let lines = vec![
         Line::from(vec![
             Span::styled("from  ", Style::default().fg(MUTED)),
@@ -75,11 +78,7 @@ pub(super) fn draw_migrate_overlay(f: &mut Frame, area: Rect, app: &App) {
 }
 
 pub(super) fn draw_tree_root_overlay(f: &mut Frame, area: Rect, app: &App) {
-    let modal = centered(area, 70, 7);
-    f.render_widget(Clear, modal);
-    let block = panel_block("Tree root", true);
-    let inner = block.inner(modal);
-    f.render_widget(block, modal);
+    let inner = modal_frame(f, area, "Tree root", 70, 7);
     let lines = vec![
         Line::from(Span::styled(
             "show only sessions under this directory",
@@ -102,11 +101,7 @@ pub(super) fn draw_tree_root_overlay(f: &mut Frame, area: Rect, app: &App) {
 pub(super) fn draw_cost_summary_overlay(f: &mut Frame, area: Rect, app: &App) {
     use std::collections::HashMap;
 
-    let modal = centered(area, 74, 34);
-    f.render_widget(Clear, modal);
-    let block = panel_block("Cost summary", true);
-    let inner = block.inner(modal);
-    f.render_widget(block, modal);
+    let inner = modal_frame(f, area, "Cost summary", 74, 34);
 
     // Aggregate over all sessions.
     let total: f64 = app.sessions.iter().map(|s| s.cost).sum();
@@ -188,11 +183,7 @@ pub(super) fn draw_cost_summary_overlay(f: &mut Frame, area: Rect, app: &App) {
 }
 
 pub(super) fn draw_settings_overlay(f: &mut Frame, area: Rect, app: &App) {
-    let modal = centered(area, 64, 14);
-    f.render_widget(Clear, modal);
-    let block = panel_block("Settings", true);
-    let inner = block.inner(modal);
-    f.render_widget(block, modal);
+    let inner = modal_frame(f, area, "Settings", 64, 14);
 
     let mark = |i: usize| -> Span<'static> {
         if app.settings_field == i {
@@ -267,11 +258,7 @@ pub(super) fn draw_settings_overlay(f: &mut Frame, area: Rect, app: &App) {
 }
 
 pub(super) fn draw_help_overlay(f: &mut Frame, area: Rect, app: &App) {
-    let modal = centered(area, 64, 36);
-    f.render_widget(Clear, modal);
-    let block = panel_block("Help", true);
-    let inner = block.inner(modal);
-    f.render_widget(block, modal);
+    let inner = modal_frame(f, area, "Help", 64, 36);
 
     // Generated from the central keymap so it always matches the real bindings.
     let rows = app.keymap.help_rows();
@@ -325,11 +312,7 @@ pub(super) fn draw_confirm_overlay(f: &mut Frame, area: Rect, app: &App) {
         Mode::Confirm(a) => a.prompt(),
         _ => "Confirm?",
     };
-    let modal = centered(area, 60, 7);
-    f.render_widget(Clear, modal);
-    let block = panel_block("Confirm", true);
-    let inner = block.inner(modal);
-    f.render_widget(block, modal);
+    let inner = modal_frame(f, area, "Confirm", 60, 7);
     let lines = vec![
         Line::raw(""),
         Line::from(Span::styled(prompt, Style::default().fg(TEXT))),
@@ -345,11 +328,7 @@ pub(super) fn draw_confirm_overlay(f: &mut Frame, area: Rect, app: &App) {
 }
 
 pub(super) fn draw_launch_overlay(f: &mut Frame, area: Rect, form: &LaunchForm) {
-    let modal = centered(area, 64, 16);
-    f.render_widget(Clear, modal);
-    let block = panel_block("Launch new claude", true);
-    let inner = block.inner(modal);
-    f.render_widget(block, modal);
+    let inner = modal_frame(f, area, "Launch new claude", 64, 16);
 
     let mut lines: Vec<Line> = Vec::new();
     lines.push(Line::from(vec![
@@ -361,10 +340,7 @@ pub(super) fn draw_launch_overlay(f: &mut Frame, area: Rect, form: &LaunchForm) 
     for i in 0..LaunchForm::FIELD_COUNT {
         let focused = i == form.field;
         let label_style = if focused {
-            Style::default()
-                .fg(SEL_FG)
-                .bg(ACCENT)
-                .add_modifier(Modifier::BOLD)
+            sel_style(true)
         } else {
             Style::default().fg(MUTED)
         };

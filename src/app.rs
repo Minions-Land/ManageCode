@@ -102,6 +102,11 @@ impl TreeNode {
     }
 }
 
+/// Non-empty path components of an absolute path (`/a//b/` → `a`, `b`).
+fn path_segments(p: &str) -> impl Iterator<Item = &str> {
+    p.split('/').filter(|c| !c.is_empty())
+}
+
 /// Follow a single-child, session-less chain (path compression) to the node
 /// that actually renders as one tree row.
 fn compress(node: &TreeNode) -> &TreeNode {
@@ -843,7 +848,7 @@ impl App {
             }
             let mut node = &mut root;
             let mut path = String::new();
-            for c in cwd.split('/').filter(|c| !c.is_empty()) {
+            for c in path_segments(&cwd) {
                 path.push('/');
                 path.push_str(c);
                 node = node
@@ -987,7 +992,7 @@ impl App {
                 let cwds: Vec<String> = self.sessions.iter().map(|s| s.cwd.clone()).collect();
                 for cwd in cwds {
                     let mut path = String::new();
-                    for c in cwd.split('/').filter(|c| !c.is_empty()) {
+                    for c in path_segments(&cwd) {
                         path.push('/');
                         path.push_str(c);
                         self.collapsed_groups.insert(path.clone());
