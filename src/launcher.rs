@@ -10,7 +10,10 @@ use crate::tmux;
 
 /// Locate the `claude` binary: `$CLAUDE_BIN`, then well-known install paths,
 /// then fall back to a bare `claude` on `$PATH`.
-fn find_claude_binary() -> Option<String> {
+fn find_claude_binary(config_path: &str) -> Option<String> {
+    if !config_path.is_empty() {
+        return Some(config_path.to_string());
+    }
     if let Ok(p) = std::env::var("CLAUDE_BIN") {
         if !p.is_empty() {
             return Some(p);
@@ -35,7 +38,10 @@ fn find_claude_binary() -> Option<String> {
 
 /// Locate the `codex` binary: `$CODEX_BIN`, then well-known install paths,
 /// then fall back to a bare `codex` on `$PATH`.
-fn find_codex_binary() -> Option<String> {
+fn find_codex_binary(config_path: &str) -> Option<String> {
+    if !config_path.is_empty() {
+        return Some(config_path.to_string());
+    }
     if let Ok(p) = std::env::var("CODEX_BIN") {
         if !p.is_empty() {
             return Some(p);
@@ -86,11 +92,10 @@ pub fn open_terminal_for(app: &mut App, pending: PendingExec) {
             // Resume with the CLI that owns the session: `claude --resume <id>`
             // or `codex resume <id>`.
             let resolved = match source {
-                Source::Claude => find_claude_binary()
+                Source::Claude => find_claude_binary(&app.config.claude_bin)
                     .map(|b| (b, vec!["--resume".to_string(), id.clone()], "claude")),
-                Source::Codex => {
-                    find_codex_binary().map(|b| (b, vec!["resume".to_string(), id.clone()], "codex"))
-                }
+                Source::Codex => find_codex_binary(&app.config.codex_bin)
+                    .map(|b| (b, vec!["resume".to_string(), id.clone()], "codex")),
             };
             let Some((bin, args, title)) = resolved else {
                 app.flash(match source {
@@ -128,7 +133,7 @@ pub fn open_terminal_for(app: &mut App, pending: PendingExec) {
             }
         }
         PendingExec::NewClaude { cwd } => {
-            let Some(claude) = find_claude_binary() else {
+            let Some(claude) = find_claude_binary(&app.config.claude_bin) else {
                 app.flash("claude binary not found");
                 return;
             };
@@ -146,7 +151,7 @@ pub fn open_terminal_for(app: &mut App, pending: PendingExec) {
             }
         }
         PendingExec::Custom { cwd, args } => {
-            let Some(claude) = find_claude_binary() else {
+            let Some(claude) = find_claude_binary(&app.config.claude_bin) else {
                 app.flash("claude binary not found");
                 return;
             };

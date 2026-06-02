@@ -62,6 +62,15 @@ impl ViewMode {
             ViewMode::Flat => "flat list",
         }
     }
+
+    /// Parse a config string ("grouped" | "tree" | "flat"); defaults to Grouped.
+    pub fn from_label(s: &str) -> ViewMode {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "tree" => ViewMode::Tree,
+            "flat" => ViewMode::Flat,
+            _ => ViewMode::Grouped,
+        }
+    }
 }
 
 /// Node in the directory trie used to build the tree view.
@@ -383,7 +392,16 @@ pub enum PendingExec {
 }
 
 impl App {
-    pub fn new(history_days: i64, check_updates: bool) -> Self {
+    /// `history_days` / `update_check` override the config when `Some` (from CLI
+    /// flags); `None` uses the configured value.
+    pub fn new(history_days: Option<i64>, update_check: Option<bool>) -> Self {
+        let config = crate::config::load();
+        let keymap = crate::keymap::Keymap::from_config(&config.keys);
+        let history_days = history_days.unwrap_or(config.history_days);
+        let view = ViewMode::from_label(&config.default_view);
+        let notifications = config.notifications;
+        let check_updates = update_check.unwrap_or(config.update_check);
+
         let (tx, rx) = mpsc::channel();
         let (ai_tx, ai_rx) = mpsc::channel();
         let (watch_tx, watch_rx) = mpsc::channel();
@@ -397,8 +415,6 @@ impl App {
                 }
             });
         }
-        let config = crate::config::load();
-        let keymap = crate::keymap::Keymap::from_config(&config.keys);
         let mut app = App {
             sessions: Vec::new(),
             selected: 0,
@@ -411,12 +427,12 @@ impl App {
             spinner_phase: 0,
             message: None,
             custom_names: scanner::load_custom_names(),
-            view: ViewMode::Grouped,
+            view,
             collapsed_groups: HashSet::new(),
             ai_running: false,
             auto_naming: false,
             auto_name_progress: (0, 0),
-            notifier: Notifier::new(true),
+            notifier: Notifier::new(notifications),
             watcher_active,
             tmux_available: tmux::available(),
             tmux_backed: HashSet::new(),
@@ -459,9 +475,14 @@ impl App {
         }
         self.scanning = true;
         let tx = self.tx.clone();
-        let days = self.history_days;
+        let opts = scanner::ScanOpts {
+            history_days: self.history_days,
+            scan_claude: self.config.scan_claude,
+            scan_codex: self.config.scan_codex,
+            max_jsonl_bytes: self.config.refresh.max_jsonl_mb * 1024 * 1024,
+        };
         thread::spawn(move || {
-            let result = scanner::scan(days);
+            let result = scanner::scan(&opts);
             let _ = tx.send(result);
         });
     }
@@ -493,30 +514,33 @@ impl App {
         if got_event {
             self.dirty_since = Some(Instant::now());
         }
-        // Debounced event-driven scan: ~180ms after the last event, kick a scan.
+        // Debounced event-driven scan after the last event.
         if let Some(t) = self.dirty_since {
-            if t.elapsed() >= Duration::from_millis(180) && !self.scanning {
+            if t.elapsed() >= Duration::from_millis(self.config.refresh.debounce_ms) && !self.scanning
+            {
                 self.kick_scan();
                 self.dirty_since = None;
             }
         }
-        // Lightweight PID/status sweep every ~1.5s — picks up busy↔idle quickly
-        // without touching JSONL files.
-        if self.last_live_sweep.elapsed() >= Duration::from_millis(1500) {
+        // Lightweight PID/status sweep — picks up busy↔idle quickly without
+        // touching JSONL files.
+        if self.last_live_sweep.elapsed() >= Duration::from_millis(self.config.refresh.live_ms) {
             scanner::refresh_live_status(&mut self.sessions);
             self.notifier.observe(&self.sessions);
             self.last_live_sweep = Instant::now();
         }
-        // Refresh the set of background tmux sessions every ~2s.
-        if self.tmux_available && self.last_tmux_refresh.elapsed() >= Duration::from_secs(2) {
+        // Refresh the set of background tmux sessions.
+        if self.tmux_available
+            && self.last_tmux_refresh.elapsed() >= Duration::from_millis(self.config.refresh.tmux_ms)
+        {
             self.refresh_tmux_backed();
             self.last_tmux_refresh = Instant::now();
         }
         // Fallback full scan. Faster when watcher couldn't attach.
         let fallback = if self.watcher_active {
-            Duration::from_secs(30)
+            Duration::from_secs(self.config.refresh.full_secs)
         } else {
-            Duration::from_secs(5)
+            Duration::from_secs(self.config.refresh.full_secs.min(5))
         };
         if self.last_scan.elapsed() >= fallback && !self.scanning {
             self.kick_scan();
@@ -581,8 +605,10 @@ impl App {
         self.ai_running = true;
         let tx = self.ai_tx.clone();
         let sessions = self.sessions.clone();
+        let model = self.config.ai_model.clone();
+        let timeout = self.config.ai_timeout_secs;
         std::thread::spawn(move || {
-            let id = ai::search(&query, &sessions);
+            let id = ai::search(&query, &sessions, &model, timeout);
             let _ = tx.send(AiEvent::SearchHit(id));
         });
     }
@@ -617,13 +643,15 @@ impl App {
         self.auto_name_progress = (0, cands.len());
         let tx = self.ai_tx.clone();
         let projects_dir = scanner::claude_dir().join("projects");
+        let model = self.config.ai_model.clone();
+        let timeout = self.config.ai_timeout_secs;
         std::thread::spawn(move || {
             for (id, _) in cands {
                 let snippet = match ai::sample_session_text(&projects_dir, &id) {
                     Some(s) => s,
                     None => continue,
                 };
-                if let Some(name) = ai::suggest_name(&snippet) {
+                if let Some(name) = ai::suggest_name(&snippet, &model, timeout) {
                     let _ = tx.send(AiEvent::NameSuggestion { session_id: id, name });
                 }
             }
