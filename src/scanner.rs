@@ -528,7 +528,7 @@ fn project_name_for(cwd: &str) -> String {
 /// Extract the session UUID from a Codex rollout filename, which looks like
 /// `rollout-2026-06-01T22-42-08-019e8635-bb96-7e23-9590-e551cb9e2806.jsonl`.
 /// The UUID is the trailing five dash-separated groups (8-4-4-4-12).
-fn codex_id_from_filename(fname: &str) -> Option<String> {
+pub fn codex_id_from_filename(fname: &str) -> Option<String> {
     let stem = fname.strip_prefix("rollout-")?.strip_suffix(".jsonl")?;
     let parts: Vec<&str> = stem.split('-').collect();
     if parts.len() < 5 {

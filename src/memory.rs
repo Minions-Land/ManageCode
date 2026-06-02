@@ -61,6 +61,10 @@ pub fn migrate_memory(src_dir: &str, dst_dir: &str) -> Result<usize> {
 /// Write `content` to `target`, or append it (with a provenance marker) if the
 /// file already exists. Returns false if the content was already present.
 fn write_or_append(target: &Path, content: &str, src_dir: &str) -> Result<bool> {
+    // Guard against `existing.contains("")` always being true for blank content.
+    if content.trim().is_empty() {
+        return Ok(false);
+    }
     if target.exists() {
         let existing = fs::read_to_string(target).unwrap_or_default();
         if existing.contains(content.trim()) {

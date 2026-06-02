@@ -12,7 +12,7 @@ use chrono::Local;
 use serde_json::{json, Value};
 
 use crate::models::{SessionInfo, Source};
-use crate::scanner::{claude_dir, codex_dir};
+use crate::scanner::{claude_dir, codex_dir, codex_id_from_filename};
 
 /// One normalized conversation turn.
 struct Msg {
@@ -23,6 +23,9 @@ struct Msg {
 
 /// Convert `session` to the *other* tool's format and return the written path.
 pub fn convert_session(session: &SessionInfo) -> Result<PathBuf> {
+    if session.cwd.trim().is_empty() {
+        return Err(anyhow!("session has no working directory to convert into"));
+    }
     match session.source {
         Source::Claude => {
             let msgs = read_claude_transcript(session)?;
@@ -112,7 +115,9 @@ fn find_codex_rollout(uuid: &str) -> Option<PathBuf> {
     {
         let p = e.path();
         if let Some(f) = p.file_name().and_then(|s| s.to_str()) {
-            if f.starts_with("rollout-") && f.ends_with(".jsonl") && f.contains(uuid) {
+            // Exact UUID match (not a substring) so a shared prefix can't pick
+            // the wrong rollout, and traversal order can't matter.
+            if codex_id_from_filename(f).as_deref() == Some(uuid) {
                 return Some(p.to_path_buf());
             }
         }

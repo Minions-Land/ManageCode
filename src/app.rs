@@ -543,7 +543,10 @@ impl App {
         }
         // Lightweight PID/status sweep — picks up busy↔idle quickly without
         // touching JSONL files.
-        if self.last_live_sweep.elapsed() >= Duration::from_millis(self.config.refresh.live_ms) {
+        // `.max(..)` floors guard against a 0 in the config busy-looping the scan.
+        if self.last_live_sweep.elapsed()
+            >= Duration::from_millis(self.config.refresh.live_ms.max(250))
+        {
             scanner::refresh_live_status(&mut self.sessions);
             self.notifier.observe(&self.sessions);
             self.last_live_sweep = Instant::now();
@@ -551,16 +554,17 @@ impl App {
         // Refresh the set of background tmux sessions.
         if self.tmux_available
             && self.last_tmux_refresh.elapsed()
-                >= Duration::from_millis(self.config.refresh.tmux_ms)
+                >= Duration::from_millis(self.config.refresh.tmux_ms.max(250))
         {
             self.refresh_tmux_backed();
             self.last_tmux_refresh = Instant::now();
         }
         // Fallback full scan. Faster when watcher couldn't attach.
+        let full_secs = self.config.refresh.full_secs.max(2);
         let fallback = if self.watcher_active {
-            Duration::from_secs(self.config.refresh.full_secs)
+            Duration::from_secs(full_secs)
         } else {
-            Duration::from_secs(self.config.refresh.full_secs.min(5))
+            Duration::from_secs(full_secs.min(5))
         };
         if self.last_scan.elapsed() >= fallback && !self.scanning {
             self.kick_scan();
