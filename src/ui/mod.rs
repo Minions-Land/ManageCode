@@ -111,7 +111,7 @@ pub fn draw(f: &mut Frame, app: &App) {
     match &app.mode {
         Mode::Filter => draw_filter_overlay(f, area, app),
         Mode::Rename => draw_rename_overlay(f, area, app),
-        Mode::Help => draw_help_overlay(f, area),
+        Mode::Help => draw_help_overlay(f, area, app),
         Mode::Confirm(_) => draw_confirm_overlay(f, area, app),
         Mode::Launch(form) => draw_launch_overlay(f, area, form),
         Mode::Settings => draw_settings_overlay(f, area, app),
@@ -143,6 +143,17 @@ fn panel_block(title: &str, focused: bool) -> Block<'_> {
 /// The "  ·  " dot separator used between header / footer segments.
 fn sep(color: Color) -> Span<'static> {
     Span::styled("  ·  ", Style::default().fg(color))
+}
+
+/// Format a single USD amount for display. Uses 2 decimals (so amounts line up
+/// and read cleanly), but keeps 4 decimals for small non-zero amounts under
+/// $0.10 so sub-cent costs don't collapse to `$0.00`.
+fn fmt_usd(v: f64) -> String {
+    if v > 0.0 && v < 0.10 {
+        format!("${:.4}", v)
+    } else {
+        format!("${:.2}", v)
+    }
 }
 
 fn draw_header(f: &mut Frame, area: Rect, app: &App, tier: Layoutness) {
@@ -229,6 +240,14 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App, tier: Layoutness) {
             format!("{} total", count),
             Style::default().fg(TEXT),
         ));
+        let codex_n = app.codex_count();
+        if codex_n > 0 {
+            spans.push(sep(MUTED));
+            spans.push(Span::styled(
+                format!("▷ {} codex", codex_n),
+                Style::default().fg(Color::Rgb(0x8B, 0xC9, 0x8B)),
+            ));
+        }
         spans.push(sep(MUTED));
         spans.push(Span::styled(
             format!("${:.2}", total),
@@ -247,7 +266,7 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App, tier: Layoutness) {
                     } else {
                         LIVE
                     };
-                    (format!("today ${:.2}/{:.0}", today, limit), c)
+                    (format!("today ${:.2}/{:.2}", today, limit), c)
                 }
                 _ => (format!("today ${:.2}", today), LIVE),
             };
@@ -319,14 +338,18 @@ fn draw_session_list(f: &mut Frame, area: Rect, app: &App, tier: Layoutness) {
         .iter()
         .map(|r| match r {
             Row::Header { .. } => 1,
+            Row::Tree { .. } => 1,
             Row::Session(_) => session_height,
         })
         .collect();
 
+    // Visible session indices are needed twice below; compute once.
+    let visible_sessions = app.visible_session_indices();
+    let selected_session_real = visible_sessions.get(app.selected).copied();
+
     // Find the row index that corresponds to App.selected (counting sessions only).
     let selected_row_idx = {
-        let visible_sessions = app.visible_session_indices();
-        let target = visible_sessions.get(app.selected).copied();
+        let target = selected_session_real;
         let mut chosen = 0usize;
         for (i, r) in rows.iter().enumerate() {
             if let Row::Session(idx) = r {
@@ -359,12 +382,11 @@ fn draw_session_list(f: &mut Frame, area: Rect, app: &App, tier: Layoutness) {
 
     let mut y = inner.y;
     let max_y = inner.y + inner.height;
-    let visible_sessions = app.visible_session_indices();
-    let selected_session_real = visible_sessions.get(app.selected).copied();
 
     for (_ri, row) in rows.iter().enumerate().skip(start_row) {
         let h = match row {
             Row::Header { .. } => 1,
+            Row::Tree { .. } => 1,
             Row::Session(_) => session_height,
         } as u16;
         if y + h > max_y {
@@ -385,6 +407,25 @@ fn draw_session_list(f: &mut Frame, area: Rect, app: &App, tier: Layoutness) {
                         height: 1,
                     },
                     cwd,
+                    *total,
+                    *alive,
+                    *collapsed,
+                );
+            }
+            Row::Tree { path, name, depth, total, alive, collapsed } => {
+                app.list_hits
+                    .borrow_mut()
+                    .push((y, 1, RowHit::Header(path.clone())));
+                draw_tree_row(
+                    f,
+                    Rect {
+                        x: inner.x,
+                        y,
+                        width: inner.width,
+                        height: 1,
+                    },
+                    name,
+                    *depth,
                     *total,
                     *alive,
                     *collapsed,
@@ -440,6 +481,36 @@ fn draw_group_header(f: &mut Frame, area: Rect, cwd: &str, total: usize, alive: 
         format!("{}", total),
         Style::default().fg(MUTED),
     ));
+    f.render_widget(Paragraph::new(Line::from(spans)), area);
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_tree_row(
+    f: &mut Frame,
+    area: Rect,
+    name: &str,
+    depth: usize,
+    total: usize,
+    alive: usize,
+    collapsed: bool,
+) {
+    let chevron = if collapsed { "▸" } else { "▾" };
+    let indent = "  ".repeat(depth);
+    let avail = (area.width as usize).saturating_sub(depth * 2 + 12);
+    let mut spans: Vec<Span> = vec![
+        Span::raw(format!(" {}", indent)),
+        Span::styled(format!("{} ", chevron), Style::default().fg(ACCENT_DIM)),
+        Span::styled(
+            truncate(name, avail.max(4)),
+            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+        ),
+        Span::raw("  "),
+    ];
+    if alive > 0 {
+        spans.push(Span::styled(format!("●{}", alive), Style::default().fg(LIVE)));
+        spans.push(Span::raw(" "));
+    }
+    spans.push(Span::styled(format!("{}", total), Style::default().fg(MUTED)));
     f.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
@@ -605,6 +676,9 @@ fn draw_detail(f: &mut Frame, area: Rect, app: &App, tier: Layoutness) {
 
     let compact = matches!(tier, Layoutness::Stacked);
     lines.push(meta_row("session", short_id(&session.id)));
+    if session.source == crate::models::Source::Codex {
+        lines.push(meta_row("source", session.source.tag().to_string()));
+    }
     lines.push(meta_row(
         "model",
         session.model.clone().unwrap_or_else(|| "—".into()),
@@ -640,7 +714,7 @@ fn draw_detail(f: &mut Frame, area: Rect, app: &App, tier: Layoutness) {
     )));
     lines.push(token_row("input", session.usage.total_input));
     lines.push(token_row("cache read", session.usage.cache_read));
-    lines.push(token_row("cache write", session.usage.cache_creation));
+    lines.push(token_row("cache write", session.usage.cache_creation()));
     lines.push(token_row("output", session.usage.total_output));
     lines.push(meta_row(
         "messages",
@@ -655,7 +729,7 @@ fn draw_detail(f: &mut Frame, area: Rect, app: &App, tier: Layoutness) {
     lines.push(Line::from(vec![
         Span::styled("cost  ", Style::default().fg(MUTED)),
         Span::styled(
-            format!("${:.4}", session.cost),
+            fmt_usd(session.cost),
             Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
         ),
     ]));
@@ -666,7 +740,7 @@ fn draw_detail(f: &mut Frame, area: Rect, app: &App, tier: Layoutness) {
         lines.push(Line::from(vec![
             Span::styled("saved by cache  ", Style::default().fg(MUTED)),
             Span::styled(
-                format!("${:.4}", saved),
+                fmt_usd(saved),
                 Style::default().fg(LIVE).add_modifier(Modifier::BOLD),
             ),
         ]));
@@ -690,7 +764,7 @@ fn draw_detail(f: &mut Frame, area: Rect, app: &App, tier: Layoutness) {
 
 fn draw_token_mix(f: &mut Frame, area: Rect, s: &SessionInfo) {
     let u = &s.usage;
-    let total = (u.total_input + u.cache_read + u.cache_creation + u.total_output) as f64;
+    let total = (u.total_input + u.cache_read + u.cache_creation() + u.total_output) as f64;
     if total < 1.0 {
         return;
     }
@@ -745,7 +819,7 @@ fn short_id(id: &str) -> String {
 }
 
 fn saved_by_cache(s: &SessionInfo) -> f64 {
-    let (pi, _po, pcr, _pcw) = crate::models::pricing_for(s.model.as_deref());
+    let (pi, _po, pcr, _pcw5, _pcw1) = crate::models::pricing_for(s.model.as_deref());
     let full_price = s.usage.cache_read as f64 / 1_000_000.0 * pi;
     let actual = s.usage.cache_read as f64 / 1_000_000.0 * pcr;
     (full_price - actual).max(0.0)
@@ -850,38 +924,28 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App, tier: Layoutness) {
         return;
     }
     let narrow = matches!(tier, Layoutness::Narrow);
-    let mut hints: Vec<(&str, &str)> = match app.mode {
-        Mode::Browse if narrow => vec![
-            ("⏎", "resume"),
-            ("n", "claude"),
-            ("/", "filter"),
-            ("?", "help"),
-            ("q", "quit"),
-        ],
-        Mode::Browse => vec![
-            ("↑↓", "nav"),
-            ("⏎", "resume"),
-            ("n", "new claude"),
-            ("s", "new shell"),
-            ("/", "filter"),
-            ("r", "rename"),
-            ("R", "refresh"),
-            ("?", "help"),
-            ("q", "quit"),
-        ],
-        Mode::Filter => vec![("⏎", "apply"), ("\\", "AI search"), ("esc", "cancel")],
-        Mode::Rename => vec![("⏎", "save"), ("esc", "cancel")],
-        Mode::Help | Mode::Confirm(_) => vec![("esc", "close")],
-        Mode::Launch(_) => vec![("⏎", "launch"), ("space", "toggle"), ("esc", "cancel")],
-        Mode::Settings => vec![("⏎", "save"), ("esc", "cancel")],
-        Mode::CostSummary => vec![("esc", "close")],
+    let owned = |v: Vec<(&str, &str)>| -> Vec<(String, String)> {
+        v.into_iter()
+            .map(|(a, b)| (a.to_string(), b.to_string()))
+            .collect()
+    };
+    // Browse hints are generated from the central keymap so they never drift
+    // from the actual bindings; other modes are fixed.
+    let mut hints: Vec<(String, String)> = match app.mode {
+        Mode::Browse => app.keymap.footer_hints(narrow),
+        Mode::Filter => owned(vec![("⏎", "apply"), ("\\", "AI search"), ("esc", "cancel")]),
+        Mode::Rename => owned(vec![("⏎", "save"), ("esc", "cancel")]),
+        Mode::Help | Mode::Confirm(_) => owned(vec![("esc", "close")]),
+        Mode::Launch(_) => owned(vec![("⏎", "launch"), ("space", "toggle"), ("esc", "cancel")]),
+        Mode::Settings => owned(vec![("⏎", "save"), ("esc", "cancel")]),
+        Mode::CostSummary => owned(vec![("esc", "close")]),
         // Terminal footer is drawn separately (shows the configured prefix).
         Mode::Terminal => vec![],
     };
 
     // When a terminal is open but the sidebar is focused, advertise how to jump in.
     if matches!(app.mode, Mode::Browse) && app.has_terminal() {
-        hints.insert(0, ("i", "terminal"));
+        hints.insert(0, ("i".to_string(), "terminal".to_string()));
     }
 
     let mut spans: Vec<Span> = vec![Span::raw(" ")];
@@ -912,7 +976,7 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App, tier: Layoutness) {
                 ),
                 Span::raw("  "),
                 Span::styled(
-                    format!("${:.4}", s.cost),
+                    fmt_usd(s.cost),
                     Style::default().fg(TEXT),
                 ),
                 sep(ACCENT_DIM),

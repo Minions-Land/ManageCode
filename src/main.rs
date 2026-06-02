@@ -2,6 +2,7 @@ mod ai;
 mod app;
 mod config;
 mod input;
+mod keymap;
 mod launcher;
 mod models;
 mod notifications;
@@ -125,6 +126,10 @@ fn main() -> Result<()> {
     let mut terminal = Terminal::new(backend)?;
     let ExitRequest::Quit = run_loop(&mut terminal, &mut app)?;
     leave_tui(&mut terminal)?;
+    // Tidy up the temporary tmux sessions we created this run.
+    if app.config.cleanup_tmux_on_exit {
+        tmux::kill_all_managed();
+    }
     Ok(())
 }
 
@@ -149,7 +154,7 @@ fn run_list(history_days: i64) -> Result<()> {
             "{} {:<8}  {:>10}  ${:>8.4}  {}  {}",
             mark,
             model,
-            format_count(s.usage.total_input + s.usage.cache_read + s.usage.cache_creation + s.usage.total_output),
+            format_count(s.usage.total_input + s.usage.cache_read + s.usage.cache_creation() + s.usage.total_output),
             s.cost,
             truncate_str(&s.name, 30),
             models::short_path(&s.cwd),

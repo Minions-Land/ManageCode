@@ -87,9 +87,18 @@ in a managed background process. The terminal pane attaches to it, so:
 
 To force-end a backgrounded session: select it, press `K`, confirm.
 
+When you quit ManageCode it tidies up after itself: every `mc-*` tmux
+session it spun up this run is killed on exit. Set
+`"cleanup_tmux_on_exit": false` in `~/.managecode/config.json` to leave them
+running in the background instead. You can also opt out of tmux entirely with
+`"prefer_tmux": false` (always run directly in the embedded PTY).
+
 Without `tmux`, ManageCode still works — the embedded terminal just runs
-claude directly. Exit claude the normal way (`/exit`, `Ctrl-D`) and the
-pane closes back to the dashboard.
+claude directly, but launches don't persist when you switch away. Install
+tmux (`brew install tmux` / `sudo apt install tmux`) for the
+switch-back-and-forth experience; ManageCode reminds you at startup if it's
+missing. Exit claude the normal way (`/exit`, `Ctrl-D`) and the pane closes
+back to the dashboard.
 
 ## Highlights
 
@@ -106,8 +115,12 @@ pane closes back to the dashboard.
   click a group header to fold it, and scroll the wheel to navigate. Inside
   the terminal pane the wheel scrolls scrollback, and clicks/drags pass
   through to `claude` or tmux when they ask for them.
-- **Group by directory.** Working on multiple repos? Each row is grouped
-  under its `cwd`; collapse the ones you don't care about with `space`.
+- **Codex too.** OpenAI Codex sessions (`~/.codex/sessions/`) show up in
+  the same list alongside Claude, priced with OpenAI rates; `Enter` resumes
+  one with `codex resume <id>`.
+- **Group, tree, or flat.** Working on multiple repos? `T` cycles the
+  sidebar between grouped-by-`cwd`, a path-compressed directory **tree**, and
+  a flat list; collapse any directory with `space` or a click.
 - **AI search.** `/` is a normal substring filter; if nothing matches,
   `Enter` falls back to a Haiku call that searches across session
   content. `\` forces AI search directly.
@@ -130,7 +143,7 @@ pane closes back to the dashboard.
 | `g` / `G` | first / last |
 | `space` / `tab` | collapse / expand the current group |
 | `o` / `O` | collapse inactive / expand all groups |
-| `T` | toggle directory grouping |
+| `T` | cycle sidebar view: grouped → directory tree → flat |
 
 **Sessions & terminal**
 
@@ -175,7 +188,10 @@ pane closes back to the dashboard.
 
 **Where does it find sessions?** It reads `~/.claude/sessions/` (live
 PIDs) and `~/.claude/projects/<cwd>/*.jsonl` (conversation history) —
-the same files Claude Code itself writes.
+the same files Claude Code itself writes. It also reads OpenAI Codex
+sessions from `~/.codex/sessions/**/rollout-*.jsonl` and shows them in
+the same list (marked `▷ N codex` in the header); `Enter` resumes a Codex
+session with `codex resume <id>`.
 
 **Will it slow my machine down?** No. It uses a file watcher
 (inotify / FSEvents) and only re-reads files that actually changed.
@@ -200,11 +216,23 @@ managecode --list          # print sessions to stdout, no TUI
 managecode --version
 INSTALL_DIR=/usr/local/bin VERSION=v0.2.0 bash install.sh
 CLAUDE_BIN=/opt/homebrew/bin/claude managecode
+CODEX_BIN=/opt/homebrew/bin/codex managecode
 ```
 
-Persistent state: custom session names go to
-`~/.managecode/session-names.json`. That's the only file ManageCode
-writes.
+`~/.managecode/config.json` (all optional):
+
+```jsonc
+{
+  "escape_prefix": "ctrl-a",     // terminal → sidebar focus key
+  "daily_budget_usd": 25.0,      // header alert when today's spend crosses it
+  "prefer_tmux": true,           // false → always use the plain PTY path
+  "cleanup_tmux_on_exit": true,  // false → leave mc-* sessions running on quit
+  "keys": { "quit": "x" }        // remap any Browse action (see ? for names)
+}
+```
+
+Persistent state lives under `~/.managecode/`: custom session names in
+`session-names.json` and the config above. ManageCode writes nothing else.
 
 ## Build from source
 

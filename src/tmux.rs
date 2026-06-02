@@ -58,6 +58,12 @@ pub fn kill_session(name: &str) -> bool {
     tmux_ok(&["kill-session", "-t", name])
 }
 
+/// Kill every `mc-*` session this tool created. Returns how many were killed.
+/// Used on quit to tidy up the temporary sessions we spun up.
+pub fn kill_all_managed() -> usize {
+    list_managed().iter().filter(|n| kill_session(n)).count()
+}
+
 /// Tmux session name for a known Claude session id. Truncated to keep names
 /// short and readable in `tmux ls`.
 pub fn resume_name(claude_session_id: &str) -> String {
