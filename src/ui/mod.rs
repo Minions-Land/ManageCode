@@ -341,24 +341,9 @@ fn draw_session_list(f: &mut Frame, area: Rect, app: &App, tier: Layoutness) {
         })
         .collect();
 
-    // Visible session indices are needed twice below; compute once.
-    let visible_sessions = app.visible_session_indices();
-    let selected_session_real = visible_sessions.get(app.selected).copied();
-
-    // Find the row index that corresponds to App.selected (counting sessions only).
-    let selected_row_idx = {
-        let target = selected_session_real;
-        let mut chosen = 0usize;
-        for (i, r) in rows.iter().enumerate() {
-            if let Row::Session { idx, .. } = r {
-                if Some(*idx) == target {
-                    chosen = i;
-                    break;
-                }
-            }
-        }
-        chosen
-    };
+    // Selection indexes every visible row directly (headers, tree nodes,
+    // sessions), so the cursor can land on — and reopen — a collapsed directory.
+    let selected_row_idx = app.selected.min(rows.len().saturating_sub(1));
 
     // Pick start_row so that [start_row..] cumulatively fits and includes selected_row_idx.
     let mut start_row = 0usize;
@@ -381,7 +366,7 @@ fn draw_session_list(f: &mut Frame, area: Rect, app: &App, tier: Layoutness) {
     let mut y = inner.y;
     let max_y = inner.y + inner.height;
 
-    for (_ri, row) in rows.iter().enumerate().skip(start_row) {
+    for (ri, row) in rows.iter().enumerate().skip(start_row) {
         let h = match row {
             Row::Header { .. } => 1,
             Row::Tree { .. } => 1,
@@ -390,6 +375,7 @@ fn draw_session_list(f: &mut Frame, area: Rect, app: &App, tier: Layoutness) {
         if y + h > max_y {
             break;
         }
+        let selected = ri == selected_row_idx;
 
         match row {
             Row::Header {
@@ -413,6 +399,7 @@ fn draw_session_list(f: &mut Frame, area: Rect, app: &App, tier: Layoutness) {
                     *total,
                     *alive,
                     *collapsed,
+                    selected,
                 );
             }
             Row::Tree {
@@ -439,6 +426,7 @@ fn draw_session_list(f: &mut Frame, area: Rect, app: &App, tier: Layoutness) {
                     *total,
                     *alive,
                     *collapsed,
+                    selected,
                 );
             }
             Row::Session {
@@ -449,7 +437,6 @@ fn draw_session_list(f: &mut Frame, area: Rect, app: &App, tier: Layoutness) {
                     .borrow_mut()
                     .push((y, h, RowHit::Session(*real_idx)));
                 let session = &app.sessions[*real_idx];
-                let selected = selected_session_real == Some(*real_idx);
                 let tmux_backed = app.tmux_backed.contains(&session.id);
                 draw_session_row(
                     f,
@@ -472,6 +459,7 @@ fn draw_session_list(f: &mut Frame, area: Rect, app: &App, tier: Layoutness) {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn draw_group_header(
     f: &mut Frame,
     area: Rect,
@@ -479,14 +467,28 @@ fn draw_group_header(
     total: usize,
     alive: usize,
     collapsed: bool,
+    selected: bool,
 ) {
     let chevron = if collapsed { "▸" } else { "▾" };
     let name = short_path(cwd);
+    let chevron_style = if selected {
+        Style::default().fg(SEL_FG).bg(ACCENT)
+    } else {
+        Style::default().fg(ACCENT_DIM)
+    };
+    let name_style = if selected {
+        Style::default()
+            .fg(SEL_FG)
+            .bg(ACCENT)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)
+    };
     let mut spans: Vec<Span> = vec![
-        Span::styled(format!(" {} ", chevron), Style::default().fg(ACCENT_DIM)),
+        Span::styled(format!(" {} ", chevron), chevron_style),
         Span::styled(
             truncate(&name, (area.width as usize).saturating_sub(18)),
-            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+            name_style,
         ),
         Span::raw("  "),
     ];
@@ -513,17 +515,28 @@ fn draw_tree_row(
     total: usize,
     alive: usize,
     collapsed: bool,
+    selected: bool,
 ) {
     let chevron = if collapsed { "▸" } else { "▾" };
     let indent = "  ".repeat(depth);
     let avail = (area.width as usize).saturating_sub(depth * 2 + 12);
+    let chevron_style = if selected {
+        Style::default().fg(SEL_FG).bg(ACCENT)
+    } else {
+        Style::default().fg(ACCENT_DIM)
+    };
+    let name_style = if selected {
+        Style::default()
+            .fg(SEL_FG)
+            .bg(ACCENT)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)
+    };
     let mut spans: Vec<Span> = vec![
         Span::raw(format!(" {}", indent)),
-        Span::styled(format!("{} ", chevron), Style::default().fg(ACCENT_DIM)),
-        Span::styled(
-            truncate(name, avail.max(4)),
-            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
-        ),
+        Span::styled(format!("{} ", chevron), chevron_style),
+        Span::styled(truncate(name, avail.max(4)), name_style),
         Span::raw("  "),
     ];
     if alive > 0 {
@@ -695,24 +708,29 @@ fn draw_detail(f: &mut Frame, area: Rect, app: &App, tier: Layoutness) {
     };
 
     let mut lines: Vec<Line> = Vec::new();
+    let inner_w = inner.width as usize;
     let title_color = if session.is_alive { LIVE } else { ACCENT };
     lines.push(Line::from(vec![Span::styled(
-        session.name.clone(),
+        truncate(&session.name, inner_w),
         Style::default()
             .fg(title_color)
             .add_modifier(Modifier::BOLD),
     )]));
     lines.push(Line::from(vec![Span::styled(
-        short_path(&session.cwd),
+        truncate(&short_path(&session.cwd), inner_w),
         Style::default().fg(MUTED),
     )]));
     lines.push(Line::raw(""));
 
     let compact = matches!(tier, Layoutness::Stacked);
-    lines.push(meta_row("session", short_id(&session.id)));
-    if session.source == crate::models::Source::Codex {
-        lines.push(meta_row("source", session.source.tag().to_string()));
-    }
+    // ID block: source tag + full id, then the exact resume command (so it's
+    // readable/copyable rather than a truncated "abc1234…").
+    lines.push(meta_row("source", session.source.tag().to_string()));
+    lines.push(meta_row("id", truncate(&session.id, inner_w.saturating_sub(15))));
+    lines.push(meta_row(
+        "resume",
+        truncate(&resume_hint(session), inner_w.saturating_sub(15)),
+    ));
     lines.push(meta_row(
         "model",
         session.model.clone().unwrap_or_else(|| "—".into()),
@@ -780,8 +798,9 @@ fn draw_detail(f: &mut Frame, area: Rect, app: &App, tier: Layoutness) {
         ]));
     }
 
-    let p = Paragraph::new(lines).wrap(Wrap { trim: false });
-    f.render_widget(p, inner);
+    // No wrap: each line is already truncated to the panel width, so a long id
+    // / path / model clips cleanly at the edge instead of wrapping oddly.
+    f.render_widget(Paragraph::new(lines), inner);
 
     // Token mix gauge under detail content if there's room.
     let gauge_height = 3;
@@ -848,8 +867,12 @@ fn format_num(n: u64) -> String {
     out
 }
 
-fn short_id(id: &str) -> String {
-    id.chars().take(8).collect::<String>() + "…"
+/// The exact CLI command to resume this session, by its owning tool.
+fn resume_hint(s: &SessionInfo) -> String {
+    match s.source {
+        crate::models::Source::Claude => format!("claude --resume {}", s.id),
+        crate::models::Source::Codex => format!("codex resume {}", s.id),
+    }
 }
 
 fn saved_by_cache(s: &SessionInfo) -> f64 {

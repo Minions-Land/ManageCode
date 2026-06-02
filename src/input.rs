@@ -161,7 +161,7 @@ fn handle_list_click(app: &mut App, y: u16) {
     match hit {
         RowHit::Header(cwd) => {
             app.last_click = None;
-            app.toggle_group(&cwd);
+            app.select_and_toggle(&cwd);
         }
         RowHit::Session(real_idx) => {
             let Some(pos) = app.select_by_real_index(real_idx) else {
@@ -290,7 +290,7 @@ fn perform_browse(app: &mut App, action: BrowseAction) -> Option<ExitRequest> {
         PageDown => app.move_selection(10),
         Top => app.selected = 0,
         Bottom => {
-            let n = app.filtered_indices().len();
+            let n = app.visible_rows().len();
             if n > 0 {
                 app.selected = n - 1;
             }
